@@ -30,6 +30,7 @@ STICK_RUN = 40       # calibrated stick units before the player runs
 TILT_X = (0, 1)      # (index into (ax, ay, az), sign): tilting right moves sliders right
 TILT_SPEED = 0.6     # slider px/s per mg of tilt
 TILT_MAX = 220.0     # slider px/s
+TILT_DEAD = 40       # mg around the level-start angle that counts as level
 AUTO_SPEED = 70.0    # slider px/s when Movement is unavailable
 
 # Rects are (x, y, w, h). A trap fires once per life when the player's centre x
@@ -72,6 +73,7 @@ class Game:
     def __init__(self, bridge):
         # Fail fast (Bridge's default timeout is 10 s) so main.py can recover and redraw.
         self.call = lambda method, *args: bridge.call(method, *args, timeout=1)
+        self.bridge = bridge
         self.prev_buttons = 0
         self.connected = None
         self.new_game()
@@ -92,6 +94,7 @@ class Game:
         self.slider = list(level["slider"][:4]) if "slider" in level else None
         self.slider_rect = None
         self.slider_dir = 1
+        self.tilt_zero = None  # Set from the first reading of each life.
         self.x, self.y = map(float, level["start"])
         self.vx = self.vy = 0.0
         self.on_ground = self.riding = False
@@ -120,7 +123,14 @@ class Game:
             self.drawn = None
         elif self.state == PLAYING and playable:
             run = 0 if abs(stick_x) < STICK_RUN else (1 if stick_x > 0 else -1)
-            tilt = (ax, ay, az)[TILT_X[0]] * TILT_X[1] if connected & 4 else None
+            tilt = None
+            if connected & 4:
+                raw = (ax, ay, az)[TILT_X[0]] * TILT_X[1]
+                if self.tilt_zero is None:
+                    self.tilt_zero = raw  # However the player holds it at the start counts as level.
+                tilt = raw - self.tilt_zero
+                if abs(tilt) < TILT_DEAD:
+                    tilt = 0
             if jump:
                 self.jump_buffer = JUMP_BUFFER
             self.step(run, tilt, dt)
@@ -229,7 +239,8 @@ class Game:
 
     def redraw(self):
         call = self.call
-        call("game_clear", BG)
+        # A full-screen fill can outlast the 1 s timeout; a timeout here would loop forever.
+        self.bridge.call("game_clear", BG, timeout=5)
         for s in self.solids:
             if s:
                 call("game_rect", *s, SOLID)
