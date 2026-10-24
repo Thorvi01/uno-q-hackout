@@ -12,7 +12,7 @@ Get the player to the white door on each of the eight levels. Your death count a
 | A (or joystick press) | Jump |
 | Tilt the console left/right | Move the blue platforms (levels 4 and 5) |
 | B | Pause; B again resumes |
-| C | Start over from level 1, any time (deaths and time reset) |
+| C | Retry the current level; press twice quickly to start over from level 1 (deaths and time reset) |
 
 The levels:
 

@@ -42,6 +42,7 @@ FLICKER = 0.4        # s a hidden spike or collapsing floor flickers before it a
 # Levels 6-8 pick a new trap layout every life, and their traps give no warning.
 BLINK = 0.1          # s per flicker phase
 DEBUG_TRAPS = False  # print every trap state change
+DOUBLE_C = 0.4      # s; a second C press within this starts the whole game over
 DOORS_CLOSE, DOORS_HOLD, DOORS_OPEN = 0.55, 0.4, 0.55  # s; the level transition, 1.5 s in all
 
 # Rects are (x, y, w, h). A trap fires once per life when the player's centre x
@@ -142,6 +143,8 @@ class Game:
         self.bridge = bridge
         self.cmds = []  # Drawing queued during a tick, sent with the next frame call.
         self.prev_buttons = 0
+        self.clock = 0.0
+        self.last_c = -1.0  # clock time of the last C press
         self.connected = None
         self.tilt_axis = None  # Learned on the first tilt level: (index into (ax, ay), sign).
         self.new_game()
@@ -223,8 +226,16 @@ class Game:
             self.connected = connected
             self.drawn = None
         playable = bool(connected & 2)  # Running needs the joystick.
-        if pressed & 4:  # C starts over from level 1, from anywhere.
-            self.new_game()
+        self.clock += dt
+        if pressed & 4:
+            if self.clock - self.last_c <= DOUBLE_C or self.state == RESULT:
+                self.new_game()  # C twice: start over from level 1.
+                self.last_c = -1.0
+            else:
+                self.last_c = self.clock
+                if self.state in (PLAYING, PAUSED, CALIBRATE):  # C once: retry this level.
+                    self.state = PLAYING
+                    self.load_level()
         if self.state == TRANSITION:
             if self.drawn is not None:
                 self.run_transition(dt)
@@ -237,7 +248,7 @@ class Game:
         jump = pressed & 9              # A or the stick press.
 
         if pressed & 4:
-            pass  # Already started over above.
+            pass  # Handled above.
         elif self.state == RESULT and pressed & 8:
             self.new_game()
         elif self.state == PAUSED:
@@ -581,10 +592,10 @@ class Game:
         elif self.state == CALIBRATE:
             lines = ["Tilt check", "Tilt the console to", "the RIGHT, then level", "it again.  A skips"]
         elif self.state == PAUSED:
-            lines = ["Paused", "B to resume", "C to start over"]
+            lines = ["Paused", "B to resume", "C to retry the level", "C twice to start over"]
         elif self.state == READY:
             lines = ["LEVEL DEVIL", "Reach the door.", "Trust nothing.",
-                     "Stick run   A jump", "B pause  C start over", "Tilt moves blue floors", "Press A to start"]
+                     "Stick run   A jump", "B pause   C retry", "C twice: start over", "Tilt moves blue floors", "Press A to start"]
         else:
             lines = ["You escaped!", f"Deaths {self.deaths}  Time {self.elapsed:.0f}s",
                      "Press C to play again"]
