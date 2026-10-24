@@ -2,23 +2,30 @@ import json
 import time
 
 from arduino.app_utils import App, Bridge
-from preview import frame_values
+from levdevil import Game
+
+game = Game(Bridge)
+last = time.monotonic()
 
 
 def loop():
+    global last
     try:
         inputs = json.loads(Bridge.call("arcade_read_inputs"))
         if inputs.get("video", 0):
             time.sleep(0.5)
             return
-        Bridge.call("arcade_draw_frame", *frame_values(inputs))
+        now = time.monotonic()
+        game.tick(inputs, min(now - last, 0.05))
+        last = now
     except Exception as error:
-        # Without fresh frames the MCU clears the preview after 1.5 seconds.
+        # A failed call may leave a half-drawn screen, so redraw everything next time.
         print(f"Arcade connection/input error: {error}")
+        game.drawn = None
         time.sleep(1)
         return
-    time.sleep(0.1)
+    time.sleep(0.01)
 
 
-print("Move the joystick, press A/B/C or the stick, and gently tilt the console.")
+print("Level Devil: stick to run, A to jump, C to restart the level.")
 App.run(user_loop=loop)

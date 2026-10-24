@@ -34,6 +34,7 @@ int videoSession = 0;
 int nextVideoSession = 0;
 int lastX = -1;
 int lastY = -1;
+bool screenReset = true;  // The waiting screen replaced the game; Python must redraw.
 
 bool readPacket(uint8_t address, uint8_t payload[3]) {
   // update() means "changed", not "read succeeded"; reject incomplete wire packets.
@@ -95,6 +96,7 @@ void showWaiting() {
   if (lastX >= 0) display.fillCircle(lastX, lastY, 6, TFT_BLACK);
   lastX = -1;
   waiting = true;
+  screenReset = true;
 }
 
 bool drawFrame(int x, int y, int pressed, int ax, int ay, int az, int connected) {
@@ -165,6 +167,45 @@ bool endVideo(int session) {
   return true;
 }
 
+// Game primitives: Python owns the game state and asks the sketch to draw.
+// game_ping keeps the 1.5-second timeout away and reports if the screen was reset.
+bool gamePing() {
+  if (videoSession) return false;
+  bool reset = screenReset;
+  screenReset = false;
+  lastFrameAt = millis();
+  waiting = false;
+  return reset;
+}
+
+bool gameClear(int color) {
+  if (videoSession) return false;
+  display.fillScreen((uint16_t)color);
+  return true;
+}
+
+bool gameRect(int x, int y, int w, int h, int color) {
+  if (videoSession) return false;
+  display.fillRect(x, y, constrain(w, 0, 480), constrain(h, 0, 320), (uint16_t)color);
+  return true;
+}
+
+bool gameCircle(int x, int y, int r, int color) {
+  if (videoSession) return false;
+  display.fillCircle(x, y, constrain(r, 0, 160), (uint16_t)color);
+  return true;
+}
+
+bool gameText(int x, int y, int size, int color, int bg, String text) {
+  if (videoSession) return false;
+  display.setTextSize(constrain(size, 1, 6));
+  display.setCursor(x, y);
+  display.setTextColor((uint16_t)color, (uint16_t)bg);
+  display.print(text);
+  display.setTextSize(2);  // The preview screens expect size 2.
+  return true;
+}
+
 void setup() {
   Modulino.begin(Wire1);
   buttons.begin();
@@ -184,6 +225,11 @@ void setup() {
     Bridge.provide_safe("arcade_video_tile", videoTile);
     Bridge.provide_safe("arcade_video_poll", pollVideo);
     Bridge.provide_safe("arcade_video_end", endVideo);
+    Bridge.provide_safe("game_ping", gamePing);
+    Bridge.provide_safe("game_clear", gameClear);
+    Bridge.provide_safe("game_rect", gameRect);
+    Bridge.provide_safe("game_circle", gameCircle);
+    Bridge.provide_safe("game_text", gameText);
   } else {
     textLine(36, "Bridge failed: restart app");
   }
