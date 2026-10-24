@@ -1,4 +1,4 @@
-"""Level Devil-style troll platformer for the UNO Q console.
+"""RAGEBAIT: a Level Devil-style troll platformer for the UNO Q console.
 
 Game rules run here in Python; the sketch only draws (game_* Bridge calls).
 """
@@ -44,6 +44,12 @@ BLINK = 0.1          # s per flicker phase
 DEBUG_TRAPS = False  # print every trap state change
 DOUBLE_C = 0.4      # s; a second C press within this starts the whole game over
 DOORS_CLOSE, DOORS_HOLD, DOORS_OPEN = 0.55, 0.4, 0.55  # s; the level transition, 1.5 s in all
+BW, BH = 10, 4         # bullet size
+BULLET_SPEED = 150.0   # px/s
+CANNON_PERIOD = 1.8    # s between shots of one cannon
+DISC_R = 13            # spiked disc radius
+DISC_SPEED = {"x": 110.0, "y": 150.0}  # px/s
+MOVE_STEP = 2          # px a bullet or disc moves before it is repainted
 
 # Rects are (x, y, w, h). A trap fires once per life when the player's centre x
 # enters "when"; "remove" takes an index into solids. A slider is
@@ -88,7 +94,7 @@ def from_map(entry):
     """Turn a levels.py tile map into this module's level format."""
     grid, (col, row) = levels.parse(entry["map"])
     level = {"name": entry["name"], "solids": [], "spikes": [], "traps": [], "fakes": [],
-             "hidden": [], "crumble": [], "decoys": [], "doors": [],
+             "hidden": [], "crumble": [], "decoys": [], "doors": [], "cannons": [], "ghosts": [], "discs": [],
              "start": (col * TILE + (TILE - PW) // 2, (row + 1) * TILE - PH), "map": True}
     for r, line in enumerate(grid):
         c = 0
@@ -101,6 +107,23 @@ def from_map(entry):
                 level["solids"].append((x, y, (end - c) * TILE, TILE))
                 c = end
                 continue
+            if line[c] in "<>":  # A wall tile that fires along its row.
+                level["solids"].append((x, y, TILE, TILE))
+                level["cannons"].append((x, y, -1 if line[c] == "<" else 1))
+            elif line[c] == "i":
+                level["ghosts"].append((x, y, TILE, TILE))
+            elif line[c] in "oO":  # Runs back and forth over the free tiles on its line.
+                dc, dr = (1, 0) if line[c] == "o" else (0, 1)
+                lo = hi = 0
+                while grid[r - dr * (lo + 1)][c - dc * (lo + 1)] not in "#<>":
+                    lo += 1
+                while grid[r + dr * (hi + 1)][c + dc * (hi + 1)] not in "#<>":
+                    hi += 1
+                cx, cy = x + TILE // 2, y + TILE // 2
+                axis = "x" if dc else "y"
+                centre = cx if dc else cy
+                level["discs"].append({"cx": cx, "cy": cy, "axis": axis,
+                                       "lo": centre - lo * TILE, "hi": centre + hi * TILE})
             kind = {"^": "spikes", "F": "fakes", "s": "hidden", "v": "crumble", "d": "decoys", "D": "doors"}
             if line[c] in kind:
                 maker = {"crumble": lambda x, y: (x, y, TILE, TILE), "decoys": door_tile, "doors": door_tile}
@@ -112,8 +135,9 @@ def from_map(entry):
 
 
 levels.validate()
-# The tile maps come after the first three levels; the tilt levels stay last.
-LEVELS = RECT_LEVELS[:3] + [from_map(m) for m in levels.LEVELS] + RECT_LEVELS[3:]
+# Levels 1-3 rects, 4-6 tile maps, 7-8 tilt, 9-11 tile maps (bullets, invisible steps, discs).
+MAPS = [from_map(m) for m in levels.LEVELS]
+LEVELS = RECT_LEVELS[:3] + MAPS[:3] + RECT_LEVELS[3:] + MAPS[3:]
 for level, kind in zip(LEVELS[5:], ("gate", "tilt", "devil")):
     level["surprise"] = kind
 
@@ -134,6 +158,12 @@ def clip(a, b):
     return (x0, y0, x1 - x0, y1 - y0) if x1 > x0 and y1 > y0 else None
 
 
+def disc_hits(box, cx, cy, r):
+    nx = min(max(cx, box[0]), box[0] + box[2])
+    ny = min(max(cy, box[1]), box[1] + box[3])
+    return (nx - cx) ** 2 + (ny - cy) ** 2 < r * r
+
+
 def ease(t):
     return t * t * (3 - 2 * t)
 
@@ -147,6 +177,7 @@ class Game:
         self.last_c = -1.0  # clock time of the last C press
         self.connected = None
         self.tilt_axis = None  # Learned on the first tilt level: (index into (ax, ay), sign).
+        self.ghost_level = None  # Invisible steps found stay found until the level changes.
         self.new_game()
 
     def new_game(self):
@@ -186,6 +217,18 @@ class Game:
                                  "index": len(self.solids)})
             self.solids.append(r)
         self.trap_near, self.spike_delay, self.floor_delay = TRAP_NEAR, FLICKER, FLICKER
+        self.tilt_flip = False
+        # Bullets and discs start at a new point in their cycle every life.
+        self.cannons = [{"x": x, "y": y, "dir": d, "phase": random.uniform(0, CANNON_PERIOD), "shots": 0}
+                        for x, y, d in level.get("cannons", [])]
+        self.bullets = []
+        self.discs = [dict(d, phase=random.uniform(0, 2 * (d["hi"] - d["lo"])), drawn=None)
+                      for d in level.get("discs", [])]
+        for d in self.discs:
+            self.place_disc(d)
+        self.ghosts = level.get("ghosts", [])
+        if self.ghost_level != self.level:
+            self.ghost_level, self.revealed = self.level, set()
         if "surprise" in level:
             self.surprise(level["surprise"])
 
@@ -287,6 +330,7 @@ class Game:
             self.redraw()
         elif self.state == PLAYING:
             self.draw_slider()
+            self.draw_movers()
             self.draw_player()
 
     def learn_tilt(self, ax, ay, pressed, connected):
@@ -307,7 +351,7 @@ class Game:
         return (self.x, self.y, PW, PH)
 
     def live_solids(self):
-        solids = [s for s in self.solids if s]
+        solids = [s for s in self.solids if s] + self.ghosts
         if self.slider:
             self.slider_rect = (round(self.slider[0]), *self.slider[1:])
             solids.append(self.slider_rect)
@@ -333,7 +377,7 @@ class Game:
     def step(self, run, tilt, dt):
         self.elapsed += dt
         self.level_time += dt
-        self.move_slider(tilt, dt)
+        self.move_slider(-tilt if self.tilt_flip and tilt else tilt, dt)
         self.jump_buffer = max(0.0, self.jump_buffer - dt)
         if self.jump_buffer and self.on_ground:
             self.vy = -JUMP
@@ -362,8 +406,16 @@ class Game:
 
         self.fire_traps()
         self.update_traps()
+        self.update_movers(dt)
         box = self.box()
-        if self.y > H or any(overlaps(box, s) for s in self.spikes + self.decoys):
+        touch = (self.x - 1, self.y - 1, PW + 2, PH + 2)
+        for g in self.ghosts:
+            if g not in self.revealed and overlaps(touch, g):
+                self.revealed.add(g)
+                self.rect(*g, SOLID)
+        hit = any(overlaps(box, self.bullet_rect(b)) for b in self.bullets) or any(
+            disc_hits(box, d["x"], d["y"], DISC_R - 1) for d in self.discs)
+        if self.y > H or hit or any(overlaps(box, s) for s in self.spikes + self.decoys):
             self.deaths += 1
             self.load_level()
         elif any(overlaps(box, d) for d in [self.door] + self.more_doors):
@@ -405,6 +457,72 @@ class Game:
                         self.rect(*self.solids[i], BG)
                         self.solids[i] = None
 
+    def bullet_rect(self, b):
+        return (round(b["x"]), b["y"], BW, BH)
+
+    def place_disc(self, d):
+        span = d["hi"] - d["lo"]
+        s = (self.level_time * DISC_SPEED[d["axis"]] + d["phase"]) % (2 * span)
+        pos = d["lo"] + (s if s < span else 2 * span - s)
+        d["x"], d["y"] = (round(pos), d["cy"]) if d["axis"] == "x" else (d["cx"], round(pos))
+
+    def update_movers(self, dt):
+        for c in self.cannons:
+            shots = int((self.level_time + c["phase"]) / CANNON_PERIOD)
+            if shots > c["shots"]:
+                c["shots"] = shots
+                x = c["x"] - BW if c["dir"] < 0 else c["x"] + TILE
+                self.bullets.append({"x": float(x), "y": c["y"] + (TILE - BH) // 2, "dir": c["dir"], "drawn": None})
+        solids = self.live_solids()
+        for b in list(self.bullets):
+            b["x"] += b["dir"] * BULLET_SPEED * dt
+            r = self.bullet_rect(b)
+            if r[0] < 0 or r[0] + BW > W or any(overlaps(r, s) for s in solids):
+                self.bullets.remove(b)
+                if b["drawn"] is not None:
+                    old = (b["drawn"], b["y"], BW, BH)
+                    self.rect(*old, BG)
+                    self.draw_decor(old)
+        for d in self.discs:
+            self.place_disc(d)
+
+    def draw_movers(self):
+        """Bullets repaint only the strips they move by; discs use the sketch's move command."""
+        # Bytes cost ~0.09 ms each on the Bridge link, so all bullets go in one command
+        # and a mover is only repainted once it has moved MOVE_STEP px.
+        slides, gone = [], []
+        for b in self.bullets:
+            x, y, old = round(b["x"]), b["y"], b["drawn"]
+            if old is not None and abs(x - old) < MOVE_STEP:
+                continue
+            slides.append(struct.pack("<hhh", -32768 if old is None else old, x, y))
+            if old is not None:
+                gone.append((b, (old, y, BW, BH) if abs(x - old) >= BW else
+                             (old, y, x - old, BH) if x > old else (x + BW, y, old - x, BH)))
+            b["drawn"] = x
+        if slides:
+            self.cmds.append(struct.pack("<cBBBHH", b"B", len(slides), BW, BH, SPIKE, BG) + b"".join(slides))
+        for b, area in gone:
+            if self.draw_decor(area):  # Crossed a door: put the bullet back on top.
+                self.rect(b["drawn"], b["y"], BW, BH, SPIKE)
+        box = lambda p: (p[0] - DISC_R, p[1] - DISC_R, 2 * DISC_R + 1, 2 * DISC_R + 1)
+        moved = []
+        for d in self.discs:
+            pos, old = (d["x"], d["y"]), d["drawn"]
+            if old is not None and max(abs(pos[0] - old[0]), abs(pos[1] - old[1])) < MOVE_STEP:
+                continue
+            moved += [(d, box(pos)), (d, box(old or pos))]
+            if old is None:
+                self.cmds.append(struct.pack("<chhhH", b"O", *pos, DISC_R, SPIKE))
+            else:
+                self.cmds.append(struct.pack("<chhhhhHH", b"M", *old, *pos, DISC_R, SPIKE, BG))
+            d["drawn"] = pos
+        for d in self.discs:  # Discs crossing each other: repaint the one that got cut.
+            if any(m is not d and overlaps(area, box(d["drawn"])) for m, area in moved):
+                self.cmds.append(struct.pack("<chhhH", b"O", *d["drawn"], DISC_R, SPIKE))
+        if self.drawn and any(overlaps(area, (*self.drawn, PW, PH)) for _, area in moved):
+            self.rect(*self.drawn, PW, PH, INK)  # Keep the player on top of a near miss.
+
     def spike_ahead(self, x):
         x = round(x)
         for s in self.solids:
@@ -420,23 +538,27 @@ class Game:
         self.spike_delay = self.floor_delay = 0.0  # No warning flicker on these levels.
         if kind == "gate":  # Level 6: which exit is real, where the spikes are, how fast the floor goes.
             self.trap_near = 1.5
-            self.floor_delay = random.choice((0.15, 0.25, 0.4))
+            self.floor_delay = random.choice((0.1, 0.15, 0.25))
             if random.random() < 0.5:  # The ground door is real; the top one kills.
                 self.door, self.decoys = self.decoys[0], [self.door] + self.decoys[1:]
                 # Most of the ground runs under a 1-tile ceiling, so only column 6 can be jumped.
-                cols = random.choice(([], [6]))
-            else:  # The top door is real; spikes on the ground punish a fall.
-                cols = random.sample(range(6, 13), random.choice((1, 2)))
-            self.hidden = [{"kind": "hidden spike", "rect": spike_tile(c * TILE, 7 * TILE), "state": "hidden",
-                            "t": 0.0, "shown": False} for c in cols]
-        elif kind == "tilt":  # Level 7: maybe a spike as you land, and the door may run back to the start.
+                rects = [spike_tile(6 * TILE, 7 * TILE)]
+            else:  # The top door is real; spikes on the ground punish a fall, maybe one by the door.
+                rects = [spike_tile(c * TILE, 7 * TILE) for c in random.sample(range(6, 13), random.choice((2, 3)))]
+                if random.random() < 0.5:
+                    rects.append(spike_tile(11 * TILE, 5 * TILE))
+            self.hidden = [{"kind": "hidden spike", "rect": r, "state": "hidden", "t": 0.0, "shown": False}
+                           for r in rects]
+        elif kind == "tilt":  # Level 7: a short platform, a spike as you land, and the door may run back.
+            self.slider[2] = 48
             self.traps = [{"when": (random.uniform(402, 430), 480), "do": [("spike_ahead", random.uniform(30, 46))]}]
-            if random.random() < 0.6:
+            if random.random() < 0.7:
                 self.traps.append({"when": (random.uniform(405, 440), 480), "do": [("door", (20, 240, 24, 40))]})
-        elif kind == "devil":  # Level 8: the floor ahead drops at a random spot; maybe a spike too.
+        elif kind == "devil":  # Level 8: shorter platform, the floor drops, a spike pops, tilt may flip.
+            self.slider[2] = 44
+            self.tilt_flip = random.random() < 0.35
             self.traps = [{"when": (random.uniform(312, 395), 480), "do": [("drop_ahead", None)]}]
-            if random.random() < 0.5:
-                self.traps.append({"when": (random.uniform(320, 400), 480), "do": [("spike_ahead", random.uniform(30, 46))]})
+            self.traps.append({"when": (random.uniform(320, 400), 480), "do": [("spike_ahead", random.uniform(30, 46))]})
         self.fired = [False] * len(self.traps)
 
     def set_trap(self, trap, state):
@@ -481,20 +603,38 @@ class Game:
         self.rect(x, y, w, h, INK)
         self.rect(x + 3, y + 3, w - 6, h - 3, DOOR)
 
+    def barrels(self):
+        return [((x if d < 0 else x + TILE - 10), y + 11, 10, 10) for x, y, d in
+                ((c["x"], c["y"], c["dir"]) for c in self.cannons)]
+
     def draw_decor(self, area=None):
-        """Doors and spike look-alikes; with an area, only those it touches."""
+        """Doors, spike look-alikes and cannon barrels; with an area, only those it touches.
+        With an area, also bullets and discs on it. Returns whether anything was drawn."""
+        drew = False
         for d in [self.door] + self.more_doors + self.decoys:
             if area is None or overlaps(area, d):
                 self.draw_door(d)
+                drew = True
         shown = [t["rect"] for t in self.hidden if t["shown"]]
-        for s in self.fakes + shown:
+        for s, color in [(s, SPIKE) for s in self.fakes + shown] + [(b, INK) for b in self.barrels()]:
             if area is None or overlaps(area, s):
-                self.rect(*s, SPIKE)
+                self.rect(*s, color)
+                drew = True
+        if area is not None:
+            for b in self.bullets:
+                if b["drawn"] is not None and overlaps(area, (b["drawn"], b["y"], BW, BH)):
+                    self.rect(b["drawn"], b["y"], BW, BH, SPIKE)
+            for d in self.discs:
+                if d["drawn"] and overlaps(area, (d["drawn"][0] - DISC_R, d["drawn"][1] - DISC_R,
+                                                  2 * DISC_R + 1, 2 * DISC_R + 1)):
+                    self.cmds.append(struct.pack("<chhhH", b"O", *d["drawn"], DISC_R, SPIKE))
+        return drew
 
     def scene(self):
         """The level as (rect, color) in draw order, for drawing it inside a strip."""
         items = [((0, 0, W, H), BG)] + [(s, SOLID) for s in self.solids if s]
-        items += [(s, SPIKE) for s in self.spikes + self.fakes]
+        items += [(g, SOLID) for g in self.revealed if g in self.ghosts]
+        items += [(s, SPIKE) for s in self.spikes + self.fakes] + [(b, INK) for b in self.barrels()]
         for x, y, w, h in [self.door] + self.more_doors + self.decoys:
             items += [((x, y, w, h), INK), ((x + 3, y + 3, w - 6, h - 3), DOOR)]
         if self.slider:
@@ -559,6 +699,9 @@ class Game:
         for s in self.solids:
             if s:
                 self.rect(*s, SOLID)
+        for g in self.ghosts:
+            if g in self.revealed:
+                self.rect(*g, SOLID)
         for s in self.spikes:
             self.rect(*s, SPIKE)
         for trap in self.hidden + self.crumble:
@@ -568,6 +711,9 @@ class Game:
         self.draw_decor()
         self.slider_drawn = None
         self.draw_slider()
+        for m in self.bullets + self.discs:
+            m["drawn"] = None
+        self.draw_movers()
         self.draw_hud()
         self.drawn = (round(self.x), round(self.y))
         self.rect(*self.drawn, PW, PH, INK)
@@ -594,7 +740,7 @@ class Game:
         elif self.state == PAUSED:
             lines = ["Paused", "B to resume", "C to retry the level", "C twice to start over"]
         elif self.state == READY:
-            lines = ["LEVEL DEVIL", "Reach the door.", "Trust nothing.",
+            lines = ["RAGEBAIT", "Reach the door.", "Trust nothing.",
                      "Stick run   A jump", "B pause   C retry", "C twice: start over", "Tilt moves blue floors", "Press A to start"]
         else:
             lines = ["You escaped!", f"Deaths {self.deaths}  Time {self.elapsed:.0f}s",

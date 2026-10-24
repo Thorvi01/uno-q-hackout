@@ -56,5 +56,5 @@ def loop():
         _report_at = now
 
 
-print("Level Devil: stick to run, A to jump, C to restart the level.")
+print("Ragebait: stick to run, A to jump, C to restart the level.")
 App.run(user_loop=loop)

@@ -328,9 +328,61 @@ void drawText(int x, int y, int size, uint16_t fg, uint16_t bg, const uint8_t* t
   }
 }
 
+void fillDisc(int cx, int cy, int r, uint16_t color) {
+  r = constrain(r, 0, 160);
+  for (int dy = -r; dy <= r; ++dy) {
+    int dx = (int)sqrtf((float)(r * r - dy * dy));
+    fillArea(cx - dx, cy + dy, 2 * dx + 1, 1, color);
+  }
+}
+
+// Row span [x0, x1] of a disc at row y; x0 > x1 when the row misses it.
+void discSpan(int cx, int cy, int r, int y, int& x0, int& x1) {
+  int dy = y - cy;
+  if (dy < -r || dy > r) { x0 = 1; x1 = 0; return; }
+  int dx = (int)sqrtf((float)(r * r - dy * dy));
+  x0 = cx - dx; x1 = cx + dx;
+}
+
+// Paint [a0, a1] minus [b0, b1] on row y.
+void spanMinus(int y, int a0, int a1, int b0, int b1, uint16_t color) {
+  if (a0 > a1) return;
+  if (b0 > b1 || b1 < a0 || b0 > a1) { fillArea(a0, y, a1 - a0 + 1, 1, color); return; }
+  if (a0 < b0) fillArea(a0, y, b0 - a0, 1, color);
+  if (a1 > b1) fillArea(b1 + 1, y, a1 - b1, 1, color);
+}
+
+// Move a disc without flicker: only pixels it leaves or newly covers are painted.
+void moveDisc(int x0, int y0, int x1, int y1, int r, uint16_t color, uint16_t bg) {
+  r = constrain(r, 0, 160);
+  for (int y = min(y0, y1) - r; y <= max(y0, y1) + r; ++y) {
+    int a0, a1, b0, b1;
+    discSpan(x0, y0, r, y, a0, a1);
+    discSpan(x1, y1, r, y, b0, b1);
+    spanMinus(y, a0, a1, b0, b1, bg);
+    spanMinus(y, b0, b1, a0, a1, color);
+  }
+}
+
 int16_t read16(const uint8_t* p) { return (int16_t)(p[0] | (p[1] << 8)); }
 
-// Commands, little-endian: 'C' color | 'R' x y w h color | 'T' x y size fg bg len text.
+// Slide a w x h rect along x from x0 to x1 (x0 = -32768: not drawn yet).
+void slideRect(int x0, int x1, int y, int w, int h, uint16_t color, uint16_t bg) {
+  if (x0 == -32768 || abs(x1 - x0) >= w) {
+    if (x0 != -32768) fillArea(x0, y, w, h, bg);
+    fillArea(x1, y, w, h, color);
+  } else if (x1 > x0) {
+    fillArea(x0, y, x1 - x0, h, bg);
+    fillArea(x0 + w, y, x1 - x0, h, color);
+  } else if (x1 < x0) {
+    fillArea(x1 + w, y, x0 - x1, h, bg);
+    fillArea(x1, y, x0 - x1, h, color);
+  }
+}
+
+// Commands, little-endian: 'C' color | 'R' x y w h color | 'O' x y r color |
+// 'M' x0 y0 x1 y1 r color bg | 'B' n w h color bg, then n x (x0 x1 y) |
+// 'T' x y size fg bg len text.
 void runDrawCommands(const uint8_t* p, size_t n) {
   size_t i = 0;
   while (i < n) {
@@ -343,6 +395,20 @@ void runDrawCommands(const uint8_t* p, size_t n) {
                constrain(read16(p + i + 5), 0, 480), constrain(read16(p + i + 7), 0, 320),
                (uint16_t)read16(p + i + 9));
       i += 11;
+    } else if (op == 'O' && i + 9 <= n) {
+      fillDisc(read16(p + i + 1), read16(p + i + 3), read16(p + i + 5), (uint16_t)read16(p + i + 7));
+      i += 9;
+    } else if (op == 'M' && i + 15 <= n) {
+      moveDisc(read16(p + i + 1), read16(p + i + 3), read16(p + i + 5), read16(p + i + 7),
+               read16(p + i + 9), (uint16_t)read16(p + i + 11), (uint16_t)read16(p + i + 13));
+      i += 15;
+    } else if (op == 'B' && i + 8 <= n && i + 8 + 6 * p[i + 1] <= n) {
+      const uint8_t* q = p + i;
+      for (int k = 0; k < q[1]; ++k) {
+        const uint8_t* b = q + 8 + 6 * k;
+        slideRect(read16(b), read16(b + 2), read16(b + 4), q[2], q[3], (uint16_t)read16(q + 4), (uint16_t)read16(q + 6));
+      }
+      i += 8 + 6 * q[1];
     } else if (op == 'T' && i + 11 <= n && i + 11 + p[i + 10] <= n) {
       drawText(read16(p + i + 1), read16(p + i + 3), p[i + 5],
                (uint16_t)read16(p + i + 6), (uint16_t)read16(p + i + 8), p + i + 11, p[i + 10]);

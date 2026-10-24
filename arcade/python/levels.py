@@ -1,7 +1,9 @@
 """Tile-map levels: 15 x 10 tiles of 32 px.
 
 Legend: # solid, . empty, P player start, D real exit, ^ spike,
-F fake spike (harmless), s hidden spike, v collapsing floor, d decoy exit (deadly).
+F fake spike (harmless), s hidden spike, v collapsing floor, d decoy exit (deadly),
+< > wall cannon firing left / right, i invisible step (appears when touched),
+o O spiked disc moving side to side / up and down.
 """
 COLS, ROWS = 15, 10
 
@@ -42,6 +44,42 @@ LEVELS = [
         "###############",
         "###############",
     ]},
+    {"name": "Dodge this", "map": [
+        "###############",
+        "#.............#",
+        "#.............#",
+        "#.............#",
+        "#.............#",
+        "#.............<",
+        ">.............#",
+        "#P.....^.....D<",
+        "###############",
+        "###############",
+    ]},
+    {"name": "Leap of faith", "map": [
+        "###############",
+        "#.............#",
+        "#.............#",
+        "#..........D..#",
+        "#.........#####",
+        "#.......i.....#",
+        "#.....i.......#",
+        "#P..i.........#",
+        "###^^^^^^^^^^##",
+        "###############",
+    ]},
+    {"name": "Saw you coming", "map": [
+        "###############",
+        "#.............#",
+        "#.............#",
+        "#....O........#",
+        "#.............#",
+        "#.........O...#",
+        "#.............#",
+        "#P..#..o...#.D#",
+        "###############",
+        "###############",
+    ]},
 ]
 
 
@@ -63,6 +101,6 @@ def validate(levels=LEVELS):
             raise ValueError(f"{name}: needs exactly one P")
         if "D" not in text:
             raise ValueError(f"{name}: needs at least one D")
-        unknown = set(text) - set("#.PD^Fsvd")
+        unknown = set(text) - set("#.PD^Fsvd<>ioO")
         if unknown:
             raise ValueError(f"{name}: unknown tiles {sorted(unknown)}")

@@ -1,16 +1,16 @@
-# Level Devil on the UNO Q console
+# RAGEBAIT
 
-A troll platformer for the UNO Q arcade console, inspired by the browser game Level Devil. Every level asks you to walk to a door, and every level lies about how. A floor drops out, or a spike appears where there wasn't one. When you die you respawn straight away, so the second attempt is about remembering the trick. Levels 4 and 5 add something the original doesn't have: blue platforms you steer by tilting the console.
+A troll platformer for the UNO Q arcade console. It is inspired by the original Level Devil browser game. Every level asks you to walk to a door, and every level lies about how. A floor drops out, or a spike appears where there wasn't one. When you die you respawn straight away, so the second attempt is about remembering the trick. Levels 7 and 8 add something the original doesn't have: blue platforms you steer by tilting the console.
 
 ## How to play
 
-Get the player to the white door on each of the eight levels. Your death count and total time show at the end.
+Get the player to the white door on each of the 11 levels. Your death count and total time show at the end.
 
 | Control | Action |
 | --- | --- |
 | Joystick left/right | Run |
 | A (or joystick press) | Jump |
-| Tilt the console left/right | Move the blue platforms (levels 4 and 5) |
+| Tilt the console left/right | Move the blue platforms (levels 7 and 8) |
 | B | Pause; B again resumes |
 | C | Retry the current level; press twice quickly to start over from level 1 (deaths and time reset) |
 
@@ -24,12 +24,15 @@ The levels:
 6. Nothing is what it seems. One door is real and one kills you, and which is which changes every life.
 7. Tilt it. The gap is too wide to jump. Stand on the blue platform and tilt the console to ride it across. The first time you reach this level, the game asks you to tilt the console to the right. It uses that to learn which way the Movement module is mounted, so tilting right always moves the platform right. Press A to skip the check.
 8. The devil. Tilt across, then watch your step.
+9. Dodge this. Wall cannons fire bullets along three rows. Dodge or jump them. A spike sits in the middle of the floor.
+10. Leap of faith. Invisible steps over a spike pit lead up to the door. A step shows up once you touch it, and it stays visible after you die on this level.
+11. Saw you coming. Watch the red spiked discs. One rolls side to side along the floor between two blocks and two move up and down. Time your run.
 
-Levels 6 to 8 pick a new trap layout every time you die, so remembering how you died doesn't help. Their traps give no warning flicker and fire the moment you reach them. Level 6 changes which door is real, where hidden spikes sit and how fast the floor drops. Level 7 may pop a spike where you land and may send the door back to the start. Level 8 drops the floor ahead of you at a random spot and sometimes adds a spike. Every layout leaves a way through: automated runs through the game's own physics beat 40 random layouts of each level.
+Levels 6 to 8 pick a new trap layout every time you die, so remembering how you died doesn't help. Their traps give no warning flicker and fire the moment you reach them. Level 6 changes which door is real and where hidden spikes sit. Its floor collapses faster, in 0.1 to 0.25 s. The layouts with the door up top get 2 or 3 hidden floor spikes, and sometimes a hidden spike on the ledge before the door. Level 7's blue platform is narrower, 48 px, so it leaves a gap you have to jump. A spike always pops up as you land, and the door runs back to the start 70% of the time. Level 8's platform is 44 px. The floor ahead always drops and a spike always pops up. In about a third of lives the tilt is reversed. Levels 9 to 11 change bullet and disc timing every life. Every layout leaves a way through. Automated runs through the game's own physics beat 40 random layouts of levels 6 and 8 to 11, and 100 of level 7.
 
 Between levels, two doors close from the top and bottom, show the next level's name, and open on it (1.5 s).
 
-Levels 4 to 6 are tile maps in `python/levels.py`, 15 x 10 tiles of 32 px:
+Levels 4 to 6 and 9 to 11 are tile maps in `python/levels.py`, 15 x 10 tiles of 32 px:
 
 | Tile | Meaning |
 | --- | --- |
@@ -40,6 +43,9 @@ Levels 4 to 6 are tile maps in `python/levels.py`, 15 x 10 tiles of 32 px:
 | `s` | Hidden spike: appears when you get within 2 tiles, flickers for 0.4 s, then kills |
 | `v` | Collapsing floor: looks solid, flickers for 0.4 s after you stand on it, then drops away |
 | `d` | Decoy exit: looks like the door, kills you |
+| `<` `>` | Wall cannon: fires bullets to the left, to the right |
+| `i` | Invisible step: appears when you touch it |
+| `o` `O` | Spiked disc: moves side to side, up and down |
 
 Check the maps with `python3 scripts/test_levels.py`. Set `DEBUG_TRAPS = True` in `python/levdevil.py` to print every trap state change to `make logs`.
 
@@ -104,7 +110,16 @@ Tilt and feel, in `python/levdevil.py`:
 
 Python on the Linux side owns the game: levels, physics, traps and screens (`python/levdevil.py`, driven by `python/main.py`). The sketch on the microcontroller reads the Modulinos and draws on the TFT.
 
-Each frame is one Bridge call, `game_frame`. Python sends the drawing it queued in the last tick as a small binary batch (fill screen, fill rectangle, text), and the sketch draws it, reads the controls and replies with a short comma-separated line. A batch over 200 bytes goes out first through `game_draw`. Only what moved gets redrawn, usually just the player and sometimes a platform or a trap. The whole screen is redrawn when a level starts or you die. On the console this runs at about 85 frames per second, roughly 11 ms per frame.
+Each frame is one Bridge call, `game_frame`. Python sends the drawing it queued in the last tick as a small binary batch, and the sketch draws it, reads the controls and replies with a short comma-separated line. The batch can hold these commands:
+
+- fill screen
+- fill rectangle
+- text
+- `'O' x y r color`: a filled disc
+- `'M' x0 y0 x1 y1 r color bg`: moves a disc. It repaints only the pixels the disc leaves or newly covers, so it doesn't flicker.
+- `'B' n w h color bg`, then n times `x0 x1 y`: slides n bullets along x in one command. Each byte costs about 0.09 ms on the Bridge link, so this keeps level 9 near full speed.
+
+A batch over 200 bytes goes out first through `game_draw`. Only what moved gets redrawn, usually just the player and sometimes a platform or a trap. The whole screen is redrawn when a level starts or you die. On the console this runs at about 85 frames per second, roughly 11 ms per frame.
 
 The DIYables library drives the UNO Q's display pins one `digitalWrite` at a time, which takes about 2 s for a full screen. The sketch writes the same pins through the STM32 GPIO set/reset registers instead. It takes the pin numbers from the board's devicetree, so a full redraw takes a few tens of milliseconds.
 
