@@ -364,6 +364,50 @@ void moveDisc(int x0, int y0, int x1, int y1, int r, uint16_t color, uint16_t bg
   }
 }
 
+// Player frames, 14 x 18 ('#' = ink), facing right: stand, run 1-3, jump.
+const char* const SPRITES[][18] = {
+  {".....####.....", "....######....", "....######....", "....######....", ".....####.....", "......##......", "....######....", "...#..##..#...", "..##..##..##..", "..#...##...#..", "......##......", "......##......", ".....####.....", "....##..##....", "....#....#....", "...##....##...", "...#......#...", "..##......##.."},
+  {"......####....", ".....######...", ".....######...", ".....######...", "......####....", "......##......", ".....######...", "....#.##..#...", "...#..##...##.", "..##..##......", "......##......", "......##......", ".....####.....", "....##..##....", "...##....##...", "..##......##..", ".##........##.", "##..........#."},
+  {"......####....", ".....######...", ".....######...", ".....######...", "......####....", "......##......", ".....####.....", ".....###......", ".....###......", "......###.....", "......##......", "......##......", "......####....", "......#####...", "......##.##...", "......##..#...", "......##......", "......###....."},
+  {"......####....", ".....######...", ".....######...", ".....######...", "......####....", "......##......", "....#####.....", "...#..##.#....", "..##..##..#...", "......##..##..", "......##......", "......##......", ".....####.....", "....##..##....", "...##....##...", "..##......##..", ".##........##.", "##..........#."},
+  {".....####.....", ".#..######..#.", ".#..######..#.", "..#.######.#..", "..#..####..#..", "...#..##..#...", "....######....", "......##......", "......##......", "......##......", "......##......", ".....####.....", "....##..##....", "...##....##...", "...##....##...", "....##..##....", ".....#..#.....", ".............."}
+};
+
+// Ink pixels of a sprite, one fill per run of '#'; bit 7 of frame mirrors it.
+void drawSprite(int x, int y, uint8_t frame, uint16_t color) {
+  int index = frame & 0x7F;
+  if (index >= (int)(sizeof(SPRITES) / sizeof(SPRITES[0]))) return;
+  bool mirror = frame & 0x80;
+  for (int r = 0; r < 18; ++r) {
+    const char* row = SPRITES[index][r];
+    for (int c = 0; c < 14;) {
+      if (row[c] != '#') { ++c; continue; }
+      int end = c;
+      while (end < 14 && row[end] == '#') ++end;
+      fillArea(mirror ? x + 14 - end : x + c, y + r, end - c, 1, color);
+      c = end;
+    }
+  }
+}
+
+// A row of triangle teeth tw px wide in an h px strip, pointing down (up = 0) or up.
+void drawTeeth(int y, int h, int tw, bool up, int phase, uint16_t color, uint16_t gap) {
+  if (tw < 2 || h < 1) return;
+  int w = display.width();
+  for (int r = 0; r < h; ++r) {
+    int yy = y + r;
+    if (yy < 0 || yy >= display.height()) continue;
+    int hw2 = up ? tw * (r + 1) / h : tw * (h - r) / h;
+    for (int x = 0; x < w;) {
+      bool tooth = abs(2 * ((x + phase) % tw) + 1 - tw) < hw2;
+      int run = 1;
+      while (x + run < w && (abs(2 * ((x + run + phase) % tw) + 1 - tw) < hw2) == tooth) ++run;
+      fillArea(x, yy, run, 1, tooth ? color : gap);
+      x += run;
+    }
+  }
+}
+
 int16_t read16(const uint8_t* p) { return (int16_t)(p[0] | (p[1] << 8)); }
 
 // Slide a w x h rect along x from x0 to x1 (x0 = -32768: not drawn yet).
@@ -382,7 +426,7 @@ void slideRect(int x0, int x1, int y, int w, int h, uint16_t color, uint16_t bg)
 
 // Commands, little-endian: 'C' color | 'R' x y w h color | 'O' x y r color |
 // 'M' x0 y0 x1 y1 r color bg | 'B' n w h color bg, then n x (x0 x1 y) |
-// 'T' x y size fg bg len text.
+// 'S' x y frame color | 'J' y h tw up phase color gap | 'T' x y size fg bg len text.
 void runDrawCommands(const uint8_t* p, size_t n) {
   size_t i = 0;
   while (i < n) {
@@ -409,6 +453,13 @@ void runDrawCommands(const uint8_t* p, size_t n) {
         slideRect(read16(b), read16(b + 2), read16(b + 4), q[2], q[3], (uint16_t)read16(q + 4), (uint16_t)read16(q + 6));
       }
       i += 8 + 6 * q[1];
+    } else if (op == 'S' && i + 8 <= n) {
+      drawSprite(read16(p + i + 1), read16(p + i + 3), p[i + 5], (uint16_t)read16(p + i + 6));
+      i += 8;
+    } else if (op == 'J' && i + 11 <= n) {
+      drawTeeth(read16(p + i + 1), p[i + 3], p[i + 4], p[i + 5], p[i + 6],
+                (uint16_t)read16(p + i + 7), (uint16_t)read16(p + i + 9));
+      i += 11;
     } else if (op == 'T' && i + 11 <= n && i + 11 + p[i + 10] <= n) {
       drawText(read16(p + i + 1), read16(p + i + 3), p[i + 5],
                (uint16_t)read16(p + i + 6), (uint16_t)read16(p + i + 8), p + i + 11, p[i + 10]);

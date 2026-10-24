@@ -50,6 +50,12 @@ CANNON_PERIOD = 1.8    # s between shots of one cannon
 DISC_R = 13            # spiked disc radius
 DISC_SPEED = {"x": 110.0, "y": 150.0}  # px/s
 MOVE_STEP = 2          # px a bullet or disc moves before it is repainted
+# Player frames in the sketch's SPRITES table; FLIP mirrors one to face left.
+STAND, RUN_CYCLE, JUMP_FRAME, FLIP = 0, (1, 2, 3, 2), 4, 0x80
+STRIDE = 8             # px run per animation frame
+ENTER_SPEED, ENTER_PAUSE, ENTER_SHUT = 90.0, 0.12, 0.3  # walking into the door, then it shuts
+TEETH_H, TEETH_W, CHOMP = 18, 24, 22  # devil jaws: teeth strip, tooth width, chomp gap (px)
+EYES_BOTTOM = 112      # the devil's eyes show once its upper jaw covers this row
 
 # Rects are (x, y, w, h). A trap fires once per life when the player's centre x
 # enters "when"; "remove" takes an index into solids. A slider is
@@ -144,8 +150,8 @@ for level, kind in zip(LEVELS[5:], ("gate", "tilt", "devil")):
 MAX_BATCH = 200  # Drawing bytes per Bridge call; the MCU accepts 256-byte messages.
 INPUT_KEYS = ("video", "connected", "buttons", "x", "y", "ax", "ay", "az", "reset")
 
-READY, PLAYING, CALIBRATE, PAUSED, TRANSITION, RESULT = (
-    "ready", "playing", "calibrate", "paused", "transition", "result")
+READY, PLAYING, CALIBRATE, PAUSED, ENTER, TRANSITION, RESULT = (
+    "ready", "playing", "calibrate", "paused", "enter", "transition", "result")
 
 
 def overlaps(a, b):
@@ -203,6 +209,9 @@ class Game:
         self.on_ground = self.riding = False
         self.jump_buffer = 0.0
         self.drawn = None  # Player position on screen; None forces a full redraw.
+        self.drawn_frame = None
+        self.facing, self.run_dist = 1, 0.0
+        self.entering, self.shut, self.gone = None, 0, False  # door being walked into
         self.slider_drawn = None
         # Tile-map traps. Collapsing floors are solids until they go.
         self.level_time = 0.0
@@ -249,6 +258,16 @@ class Game:
         reply = self.bridge.call("game_frame", chunks[-1], timeout=timeout(chunks[-1]))
         return dict(zip(INPUT_KEYS, map(int, reply.split(","))))
 
+    def sprite(self):
+        self.cmds.append(struct.pack("<chhBH", b"S", *self.drawn, self.drawn_frame, INK))
+
+    def disc(self, x, y, r, color):
+        self.cmds.append(struct.pack("<chhhH", b"O", x, y, r, color))
+
+    def teeth(self, y, up):
+        self.cmds.append(struct.pack("<chBBBBHH", b"J", y, TEETH_H, TEETH_W, up,
+                                     TEETH_W // 2 if up else 0, DOOR, INK))
+
     def clear(self, color):
         self.cmds = [struct.pack("<cH", b"C", color)]  # Anything queued before is covered.
 
@@ -279,6 +298,15 @@ class Game:
                 if self.state in (PLAYING, PAUSED, CALIBRATE):  # C once: retry this level.
                     self.state = PLAYING
                     self.load_level()
+        if self.state == ENTER:
+            if self.drawn is not None:
+                self.run_enter(dt)
+                return
+            # The screen was reset while walking in: go straight on.
+            if self.level + 1 < len(LEVELS):
+                self.state, self.doors_loaded = TRANSITION, False
+            else:
+                self.state = RESULT
         if self.state == TRANSITION:
             if self.drawn is not None:
                 self.run_transition(dt)
@@ -383,6 +411,8 @@ class Game:
             self.vy = -JUMP
             self.jump_buffer = 0.0
         self.vx = run * RUN
+        if run:
+            self.facing = run
         self.vy = min(MAX_FALL, self.vy + GRAVITY * dt)
         solids = self.live_solids()
         self.on_ground = self.riding = False
@@ -404,6 +434,8 @@ class Game:
                         self.y = s[1] + s[3]
                     self.vy = 0.0
 
+        if self.on_ground:
+            self.run_dist += abs(self.vx) * dt
         self.fire_traps()
         self.update_traps()
         self.update_movers(dt)
@@ -419,9 +451,48 @@ class Game:
             self.deaths += 1
             self.load_level()
         elif any(overlaps(box, d) for d in [self.door] + self.more_doors):
+            # Walk into the door before the next level.
+            self.entering = next(d for d in [self.door] + self.more_doors if overlaps(box, d))
+            self.state, self.enter_t, self.shut = ENTER, 0.0, 0
+            self.vx = self.vy = 0.0
+            self.draw_door(self.entering)
+
+    def player_frame(self):
+        if not self.on_ground and self.vy:  # A level that just loaded has not landed yet.
+            frame = JUMP_FRAME
+        elif self.vx:
+            frame = RUN_CYCLE[int(self.run_dist / STRIDE) % len(RUN_CYCLE)]
+        else:
+            frame = STAND
+        return frame | (FLIP if self.facing < 0 else 0)
+
+    def run_enter(self, dt):
+        """Walk to the middle of the open door, stand, and let it shut on the player."""
+        x, y, w, h = self.entering
+        tx, ty = x + (w - PW) / 2, y + h - PH
+        if abs(self.x - tx) > 0.5 or abs(self.y - ty) > 0.5:
+            step = ENTER_SPEED * dt
+            dx = max(-step, min(step, tx - self.x))
+            self.x += dx
+            self.y += max(-step, min(step, ty - self.y))
+            self.vx, self.on_ground = dx, True
+            if dx:
+                self.facing = 1 if dx > 0 else -1
+                self.run_dist += abs(dx)
+            self.draw_player()
+            return
+        self.x, self.y, self.vx = tx, ty, 0.0
+        self.draw_player()
+        self.enter_t += dt
+        shut = min(w - 6, round((w - 6) * max(0.0, self.enter_t - ENTER_PAUSE) / ENTER_SHUT))
+        if shut > self.shut:
+            self.rect(x + 3 + self.shut, y + 3, shut - self.shut, h - 3, DOOR)
+            self.shut = shut
+        if shut == w - 6:
+            self.gone = True
             if self.level + 1 < len(LEVELS):
                 self.state = TRANSITION
-                self.doors_t, self.doors_k, self.doors_loaded = 0.0, 0, False
+                self.doors_t, self.doors_k, self.doors_loaded, self.eyes = 0.0, 0, False, False
             else:
                 self.state = RESULT
                 self.drawn = None
@@ -521,7 +592,8 @@ class Game:
             if any(m is not d and overlaps(area, box(d["drawn"])) for m, area in moved):
                 self.cmds.append(struct.pack("<chhhH", b"O", *d["drawn"], DISC_R, SPIKE))
         if self.drawn and any(overlaps(area, (*self.drawn, PW, PH)) for _, area in moved):
-            self.rect(*self.drawn, PW, PH, INK)  # Keep the player on top of a near miss.
+            if not self.gone:
+                self.sprite()  # Keep the player on top of a near miss.
 
     def spike_ahead(self, x):
         x = round(x)
@@ -599,9 +671,12 @@ class Game:
             self.show_trap(trap, SOLID)
 
     def draw_door(self, rect=None):
-        x, y, w, h = rect or self.door
-        self.rect(x, y, w, h, INK)
-        self.rect(x + 3, y + 3, w - 6, h - 3, DOOR)
+        x, y, w, h = rect = rect or self.door
+        self.rect(x, y, w, h, INK)  # An open door is all dark inside.
+        if rect != self.entering:
+            self.rect(x + 3, y + 3, w - 6, h - 3, DOOR)
+        elif self.shut:
+            self.rect(x + 3, y + 3, self.shut, h - 3, DOOR)
 
     def barrels(self):
         return [((x if d < 0 else x + TILE - 10), y + 11, 10, 10) for x, y, d in
@@ -639,7 +714,6 @@ class Game:
             items += [((x, y, w, h), INK), ((x + 3, y + 3, w - 6, h - 3), DOOR)]
         if self.slider:
             items.append(((round(self.slider[0]), *self.slider[1:]), SLIDER))
-        items.append(((round(self.x), round(self.y), PW, PH), INK))
         return items
 
     def draw_strip(self, area):
@@ -649,50 +723,71 @@ class Game:
                 self.rect(*part, color)
 
     def run_transition(self, dt):
-        """Doors close from the top and bottom, show the next level's name, then open on it."""
+        """A devil eats the screen: jaws close from the top and bottom, chomp twice on the
+        next level's name, then open on it."""
         self.doors_t += dt
         t, half = self.doors_t, H // 2
         if t < DOORS_CLOSE:
-            self.close_doors(round(half * ease(t / DOORS_CLOSE)))
+            self.jaws(round(half * ease(t / DOORS_CLOSE)), None)
         elif not self.doors_loaded:
-            self.close_doors(half)
+            self.jaws(half, None)
             self.level += 1
             self.load_level()
             self.doors_loaded = True
-            self.drawn = (round(self.x), round(self.y))  # Drawn as the doors open.
+            self.drawn = (round(self.x), round(self.y))  # Drawn as the jaws open.
+            self.drawn_frame = self.player_frame()
             self.slider_drawn = round(self.slider[0]) if self.slider else None
-            for line, y in ((f"Level {self.level + 1}/{len(LEVELS)}", 120), (LEVELS[self.level]["name"], 180)):
-                self.text((W - 12 * len(line)) // 2, y, 2, BG, SOLID, line)
+            for line, y in ((f"Level {self.level + 1}/{len(LEVELS)}", 206), (LEVELS[self.level]["name"], 246)):
+                self.text((W - 12 * len(line)) // 2, y, 2, DOOR, SPIKE, line)
         elif t < DOORS_CLOSE + DOORS_HOLD:
-            pass
+            u = (t - DOORS_CLOSE) / DOORS_HOLD
+            self.jaws(half - round(CHOMP * abs(math.sin(2 * math.pi * u))), lambda a: self.rect(*a, INK))
         elif t < DOORS_CLOSE + DOORS_HOLD + DOORS_OPEN:
-            self.open_doors(round(half * (1 - ease((t - DOORS_CLOSE - DOORS_HOLD) / DOORS_OPEN))))
+            if self.eyes:
+                self.draw_eyes(shut=True)  # Fed: the devil shuts its eyes as it opens up.
+            self.jaws(round(half * (1 - ease((t - DOORS_CLOSE - DOORS_HOLD) / DOORS_OPEN))), self.reveal)
         else:
-            self.open_doors(0)
+            self.jaws(0, self.reveal)
             self.draw_hud()
             self.state = PLAYING
 
-    def close_doors(self, k):
-        p = self.doors_k
-        if k <= p:
-            return
-        start = max(0, p - 3)  # Repaint the old edge stripe as door.
-        self.rect(0, start, W, k - start, SOLID)
-        self.rect(0, k - 3, W, 3, INK)
-        self.rect(0, H - k, W, k - start, SOLID)
-        self.rect(0, H - k, W, 3, INK)
+    def jaws(self, k, inside):
+        """Upper jaw's teeth end at row k, lower jaw's start at H - k. Opening calls
+        inside(area) for each strip the jaws uncover."""
+        p, T = self.doors_k, TEETH_H
+        if k > p:
+            a = max(0, p - T)
+            if k - T > a:  # Skin over the old teeth and the new rows.
+                self.rect(0, a, W, k - T - a, SPIKE)
+                self.rect(0, H - k + T, W, k - T - a, SPIKE)
+            self.teeth(k - T, 0)
+            self.teeth(H - k, 1)
+            if not self.eyes and k - T >= EYES_BOTTOM:
+                self.draw_eyes()
+        elif k < p:
+            inside((0, k, W, p - k))
+            inside((0, H - p, W, p - k))
+            if k > 0:
+                self.teeth(k - T, 0)
+                self.teeth(H - k, 1)
         self.doors_k = k
 
-    def open_doors(self, k):
-        p = self.doors_k
-        if k >= p:
-            return
-        self.draw_strip((0, k, W, p - k))
-        self.draw_strip((0, H - p, W, p - k))
-        if k > 0:
-            self.rect(0, k - 3, W, 3, INK)
-            self.rect(0, H - k, W, 3, INK)
-        self.doors_k = k
+    def draw_eyes(self, shut=False):
+        self.eyes = not shut
+        for cx, look in ((W // 2 - 90, 12), (W // 2 + 90, -12)):
+            if shut:
+                self.disc(cx, 80, 30, SPIKE)
+                self.rect(cx - 26, 84, 52, 6, INK)
+            else:
+                self.disc(cx, 80, 30, DOOR)
+                self.disc(cx + look, 88, 11, INK)
+            for i in range(6):  # Angry brow, sloping down toward the nose.
+                self.rect(cx - 45 + 14 * i if look > 0 else cx + 31 - 14 * i, 30 + 3 * i, 14, 7, INK)
+
+    def reveal(self, area):
+        self.draw_strip(area)
+        if not self.gone and overlaps(area, (*self.drawn, PW, PH)):
+            self.sprite()
 
     def redraw(self):
         self.clear(BG)
@@ -716,7 +811,9 @@ class Game:
         self.draw_movers()
         self.draw_hud()
         self.drawn = (round(self.x), round(self.y))
-        self.rect(*self.drawn, PW, PH, INK)
+        self.drawn_frame = self.player_frame()
+        if not self.gone:
+            self.sprite()
         if self.state != PLAYING or not self.connected & 2:
             self.draw_overlay()
 
@@ -752,14 +849,14 @@ class Game:
             self.text(80, 80 + 24 * i, 2, INK, BG, line)
 
     def draw_player(self):
-        pos = (round(self.x), round(self.y))
-        if pos == self.drawn:
+        pos, frame = (round(self.x), round(self.y)), self.player_frame()
+        if self.gone or (pos == self.drawn and frame == self.drawn_frame):
             return
         old = (*self.drawn, PW, PH)
         self.rect(*old, BG)
         self.draw_decor(old)  # Repair doors or fake spikes the player walked through.
-        self.rect(*pos, PW, PH, INK)
-        self.drawn = pos
+        self.drawn, self.drawn_frame = pos, frame
+        self.sprite()
 
     def draw_slider(self):
         if not self.slider:

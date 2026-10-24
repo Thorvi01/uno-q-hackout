@@ -30,7 +30,7 @@ The levels:
 
 Levels 6 to 8 pick a new trap layout every time you die, so remembering how you died doesn't help. Their traps give no warning flicker and fire the moment you reach them. Level 6 changes which door is real and where hidden spikes sit. Its floor collapses faster, in 0.1 to 0.25 s. The layouts with the door up top get 2 or 3 hidden floor spikes, and sometimes a hidden spike on the ledge before the door. Level 7's blue platform is narrower, 48 px, so it leaves a gap you have to jump. A spike always pops up as you land, and the door runs back to the start 70% of the time. Level 8's platform is 44 px. The floor ahead always drops and a spike always pops up. In about a third of lives the tilt is reversed. Levels 9 to 11 change bullet and disc timing every life. Every layout leaves a way through. Automated runs through the game's own physics beat 40 random layouts of levels 6 and 8 to 11, and 100 of level 7.
 
-Between levels, two doors close from the top and bottom, show the next level's name, and open on it (1.5 s).
+When you reach the door, the stick figure walks into the dark doorway and the door shuts behind him. Then a devil eats the screen. Its jaws close from the top and bottom and chomp twice while the next level's name shows on its chin, then open on the new level (1.5 s).
 
 Levels 4 to 6 and 9 to 11 are tile maps in `python/levels.py`, 15 x 10 tiles of 32 px:
 
@@ -117,6 +117,8 @@ Each frame is one Bridge call, `game_frame`. Python sends the drawing it queued 
 - text
 - `'O' x y r color`: a filled disc
 - `'M' x0 y0 x1 y1 r color bg`: moves a disc. It repaints only the pixels the disc leaves or newly covers, so it doesn't flicker.
+- `'S' x y frame color`: draws a player frame from the sketch's `SPRITES` table (stand, three run frames, jump). Bit 7 of `frame` mirrors it to face left.
+- `'J' y h tw up phase color gap`: a strip of triangle teeth for the devil's jaws.
 - `'B' n w h color bg`, then n times `x0 x1 y`: slides n bullets along x in one command. Each byte costs about 0.09 ms on the Bridge link, so this keeps level 9 near full speed.
 
 A batch over 200 bytes goes out first through `game_draw`. Only what moved gets redrawn, usually just the player and sometimes a platform or a trap. The whole screen is redrawn when a level starts or you die. On the console this runs at about 85 frames per second, roughly 11 ms per frame.
