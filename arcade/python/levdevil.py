@@ -70,7 +70,8 @@ def overlaps(a, b):
 
 class Game:
     def __init__(self, bridge):
-        self.call = bridge.call
+        # Fail fast (Bridge's default timeout is 10 s) so main.py can recover and redraw.
+        self.call = lambda method, *args: bridge.call(method, *args, timeout=1)
         self.prev_buttons = 0
         self.connected = None
         self.new_game()

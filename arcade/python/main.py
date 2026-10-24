@@ -11,7 +11,7 @@ last = time.monotonic()
 def loop():
     global last
     try:
-        inputs = json.loads(Bridge.call("arcade_read_inputs"))
+        inputs = json.loads(Bridge.call("arcade_read_inputs", timeout=1))
         if inputs.get("video", 0):
             time.sleep(0.5)
             return
