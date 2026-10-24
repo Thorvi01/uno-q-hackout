@@ -3,7 +3,8 @@
 Legend: # solid, . empty, P player start, D real exit, ^ spike,
 F fake spike (harmless), s hidden spike, v collapsing floor, d decoy exit (deadly),
 < > wall cannon firing left / right, i invisible step (appears when touched),
-o O spiked disc moving side to side / up and down.
+o O spiked disc moving side to side / up and down,
+m land mine (goes off when you land on it; walk onto it and it goes off soon after).
 """
 COLS, ROWS = 15, 10
 
@@ -75,8 +76,8 @@ LEVELS = [
         "#....O........#",
         "#.............#",
         "#.........O...#",
-        "#.............#",
-        "#P..#..o...#.D#",
+        "#...m......m..#",
+        "#P..#.mo.m.#mD#",
         "###############",
         "###############",
     ]},
@@ -101,6 +102,6 @@ def validate(levels=LEVELS):
             raise ValueError(f"{name}: needs exactly one P")
         if "D" not in text:
             raise ValueError(f"{name}: needs at least one D")
-        unknown = set(text) - set("#.PD^Fsvd<>ioO")
+        unknown = set(text) - set("#.PD^Fsvd<>ioOm")
         if unknown:
             raise ValueError(f"{name}: unknown tiles {sorted(unknown)}")

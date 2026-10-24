@@ -30,12 +30,10 @@ JUMP = 480.0         # px/s upward
 MAX_FALL = 700.0     # px/s
 JUMP_BUFFER = 0.12   # s; a jump pressed just before landing still counts
 STICK_RUN = 40       # calibrated stick units before the player runs
-TILT_X = (0, 1)      # Fallback (index into (ax, ay, az), sign) if the tilt check is skipped
 TILT_LEARN = 250     # mg of tilt that answers the "tilt right" check
 TILT_SPEED = 0.6     # slider px/s per mg of tilt
 TILT_MAX = 220.0     # slider px/s
 TILT_DEAD = 40       # mg around the level-start angle that counts as level
-AUTO_SPEED = 70.0    # slider px/s when Movement is unavailable
 TILE = 32            # tile-map levels (levels.py) use 15 x 10 tiles of this size
 TRAP_NEAR = 2        # tiles; a hidden spike wakes when the player is this close
 FLICKER = 0.4        # s a hidden spike or collapsing floor flickers before it acts
@@ -56,6 +54,8 @@ STRIDE = 8             # px run per animation frame
 ENTER_SPEED, ENTER_PAUSE, ENTER_SHUT = 90.0, 0.12, 0.3  # walking into the door, then it shuts
 TEETH_H, TEETH_W, CHOMP = 18, 24, 22  # devil jaws: teeth strip, tooth width, chomp gap (px)
 EYES_BOTTOM = 112      # the devil's eyes show once its upper jaw covers this row
+# Land mines go off the moment you land on one; walking onto one lights a fuse.
+MINE_FUSE, BLAST_TIME, DIE_TIME, BLAST_R = 0.4, 0.3, 0.45, 22
 
 # Rects are (x, y, w, h). A trap fires once per life when the player's centre x
 # enters "when"; "remove" takes an index into solids. A slider is
@@ -100,7 +100,7 @@ def from_map(entry):
     """Turn a levels.py tile map into this module's level format."""
     grid, (col, row) = levels.parse(entry["map"])
     level = {"name": entry["name"], "solids": [], "spikes": [], "traps": [], "fakes": [],
-             "hidden": [], "crumble": [], "decoys": [], "doors": [], "cannons": [], "ghosts": [], "discs": [],
+             "hidden": [], "crumble": [], "decoys": [], "doors": [], "cannons": [], "ghosts": [], "discs": [], "mines": [],
              "start": (col * TILE + (TILE - PW) // 2, (row + 1) * TILE - PH), "map": True}
     for r, line in enumerate(grid):
         c = 0
@@ -116,6 +116,8 @@ def from_map(entry):
             if line[c] in "<>":  # A wall tile that fires along its row.
                 level["solids"].append((x, y, TILE, TILE))
                 level["cannons"].append((x, y, -1 if line[c] == "<" else 1))
+            elif line[c] == "m":  # Sits on whatever is below this tile.
+                level["mines"].append((x, y + TILE))
             elif line[c] == "i":
                 level["ghosts"].append((x, y, TILE, TILE))
             elif line[c] in "oO":  # Runs back and forth over the free tiles on its line.
@@ -144,14 +146,15 @@ levels.validate()
 # Levels 1-3 rects, 4-6 tile maps, 7-8 tilt, 9-11 tile maps (bullets, invisible steps, discs).
 MAPS = [from_map(m) for m in levels.LEVELS]
 LEVELS = RECT_LEVELS[:3] + MAPS[:3] + RECT_LEVELS[3:] + MAPS[3:]
+MAPS[4]["step_mine"] = True  # Leap of faith: one invisible step carries a mine that blows it away.
 for level, kind in zip(LEVELS[5:], ("gate", "tilt", "devil")):
     level["surprise"] = kind
 
 MAX_BATCH = 200  # Drawing bytes per Bridge call; the MCU accepts 256-byte messages.
 INPUT_KEYS = ("video", "connected", "buttons", "x", "y", "ax", "ay", "az", "reset")
 
-READY, PLAYING, CALIBRATE, PAUSED, ENTER, TRANSITION, RESULT = (
-    "ready", "playing", "calibrate", "paused", "enter", "transition", "result")
+READY, PLAYING, CALIBRATE, PAUSED, DYING, ENTER, TRANSITION, RESULT = (
+    "ready", "playing", "calibrate", "paused", "dying", "enter", "transition", "result")
 
 
 def overlaps(a, b):
@@ -187,6 +190,7 @@ class Game:
         self.new_game()
 
     def new_game(self):
+        self.tilt_axis = None  # Every run starts with the tilt check on the first tilt level.
         self.level = 0
         self.deaths = 0
         self.elapsed = 0.0
@@ -202,7 +206,6 @@ class Game:
         self.fired = [False] * len(self.traps)
         self.slider = list(level["slider"][:4]) if "slider" in level else None
         self.slider_rect = None
-        self.slider_dir = 1
         self.tilt_zero = None  # Set from the first reading of each life.
         self.x, self.y = map(float, level["start"])
         self.vx = self.vy = 0.0
@@ -235,7 +238,14 @@ class Game:
                       for d in level.get("discs", [])]
         for d in self.discs:
             self.place_disc(d)
-        self.ghosts = level.get("ghosts", [])
+        self.ghosts = list(level.get("ghosts", []))  # A blown-up step is gone for this life only.
+        self.mines = [{"x": x, "s": y, "host": None, "lethal": True, "state": "armed", "t": 0.0}
+                      for x, y in level.get("mines", [])]
+        if level.get("step_mine"):
+            g = random.choice(self.ghosts)
+            self.mines.append({"x": g[0], "s": g[1], "host": g, "lethal": False, "state": "armed", "t": 0.0})
+        self.blasts = []
+        self.die_t = 0.0
         if self.ghost_level != self.level:
             self.ghost_level, self.revealed = self.level, set()
         if "surprise" in level:
@@ -260,6 +270,11 @@ class Game:
 
     def sprite(self):
         self.cmds.append(struct.pack("<chhBH", b"S", *self.drawn, self.drawn_frame, INK))
+
+    def spike(self, rect):
+        """A spike strip drawn as a row of red teeth."""
+        x, y, w, h = rect
+        self.cmds.append(struct.pack("<chhhhBHH", b"K", x, y, w, h, max(1, round(w / 10)), SPIKE, BG))
 
     def disc(self, x, y, r, color):
         self.cmds.append(struct.pack("<chhhH", b"O", x, y, r, color))
@@ -287,7 +302,7 @@ class Game:
         if connected != self.connected:
             self.connected = connected
             self.drawn = None
-        playable = bool(connected & 2)  # Running needs the joystick.
+        playable = self.playable()
         self.clock += dt
         if pressed & 4:
             if self.clock - self.last_c <= DOUBLE_C or self.state == RESULT:
@@ -295,7 +310,7 @@ class Game:
                 self.last_c = -1.0
             else:
                 self.last_c = self.clock
-                if self.state in (PLAYING, PAUSED, CALIBRATE):  # C once: retry this level.
+                if self.state in (PLAYING, PAUSED, CALIBRATE, DYING):  # C once: retry this level.
                     self.state = PLAYING
                     self.load_level()
         if self.state == ENTER:
@@ -320,6 +335,11 @@ class Game:
 
         if pressed & 4:
             pass  # Handled above.
+        elif self.state == DYING:  # Show the blast, then respawn.
+            self.die_t += dt
+            if self.die_t >= DIE_TIME:
+                self.state = PLAYING
+                self.load_level()
         elif self.state == RESULT and pressed & 8:
             self.new_game()
         elif self.state == PAUSED:
@@ -333,17 +353,17 @@ class Game:
             self.state = PLAYING
             self.drawn = None
         elif self.state == CALIBRATE:
-            self.learn_tilt(ax, ay, pressed, connected)
-        elif self.state == PLAYING and self.slider and connected & 4 and self.tilt_axis is None:
-            # First tilt level: ask for a tilt to the right and learn which way is right.
+            self.learn_tilt(ax, ay, connected)
+        elif self.state == PLAYING and self.slider and self.tilt_axis is None:
+            # First tilt level: no playing until a tilt to the right shows which way is right.
             self.state = CALIBRATE
-            self.tilt_base = (ax, ay)
+            self.tilt_base = (ax, ay) if connected & 4 else None
             self.drawn = None
         elif self.state == PLAYING and playable:
             run = 0 if abs(stick_x) < STICK_RUN else (1 if stick_x > 0 else -1)
             tilt = None
-            if connected & 4:
-                index, sign = self.tilt_axis or TILT_X
+            if self.slider:  # Only reached after the tilt check, with Movement connected.
+                index, sign = self.tilt_axis
                 raw = (ax, ay, az)[index] * sign
                 if self.tilt_zero is None:
                     self.tilt_zero = raw  # However the player holds it at the start counts as level.
@@ -361,19 +381,28 @@ class Game:
             self.draw_movers()
             self.draw_player()
 
-    def learn_tilt(self, ax, ay, pressed, connected):
-        if not connected & 4 or pressed & 1:  # Movement gone, or A skips the check.
-            self.tilt_axis = self.tilt_axis or TILT_X
-        else:
-            deltas = (ax - self.tilt_base[0], ay - self.tilt_base[1])
-            index = 0 if abs(deltas[0]) >= abs(deltas[1]) else 1
-            if abs(deltas[index]) < TILT_LEARN:
-                return
-            self.tilt_axis = (index, 1 if deltas[index] > 0 else -1)
-            # The reading from before the tilt is level, not the tilted one.
-            self.tilt_zero = self.tilt_base[index] * self.tilt_axis[1]
+    def learn_tilt(self, ax, ay, connected):
+        """The check can't be skipped: it waits for Movement and a clear tilt to the right."""
+        if not connected & 4:
+            self.tilt_base = None
+            return
+        if self.tilt_base is None:
+            self.tilt_base = (ax, ay)
+            return
+        deltas = (ax - self.tilt_base[0], ay - self.tilt_base[1])
+        index = 0 if abs(deltas[0]) >= abs(deltas[1]) else 1
+        if abs(deltas[index]) < TILT_LEARN:
+            return
+        self.tilt_axis = (index, 1 if deltas[index] > 0 else -1)
+        # The reading from before the tilt is level, not the tilted one.
+        self.tilt_zero = self.tilt_base[index] * self.tilt_axis[1]
         self.state = PLAYING
         self.drawn = None
+
+    def playable(self):
+        """Running needs the joystick, and a tilt level also needs Movement."""
+        c = self.connected or 0
+        return bool(c & 2) and (not self.slider or bool(c & 4))
 
     def box(self):
         return (self.x, self.y, PW, PH)
@@ -389,15 +418,8 @@ class Game:
         if not self.slider:
             return
         lo, hi = LEVELS[self.level]["slider"][4:]
-        if tilt is None:  # No Movement module: the platform patrols on its own.
-            speed = AUTO_SPEED * self.slider_dir
-        else:
-            speed = max(-TILT_MAX, min(TILT_MAX, tilt * TILT_SPEED))
+        speed = 0.0 if tilt is None else max(-TILT_MAX, min(TILT_MAX, tilt * TILT_SPEED))
         x = max(lo, min(hi, self.slider[0] + speed * dt))
-        if x == hi:
-            self.slider_dir = -1
-        elif x == lo:
-            self.slider_dir = 1
         if self.riding:
             self.x += x - self.slider[0]
         self.slider[0] = x
@@ -415,6 +437,7 @@ class Game:
             self.facing = run
         self.vy = min(MAX_FALL, self.vy + GRAVITY * dt)
         solids = self.live_solids()
+        was_ground = self.on_ground
         self.on_ground = self.riding = False
         # Small sub-steps so a fast fall cannot pass through a thin platform.
         steps = max(1, math.ceil(max(abs(self.vx), abs(self.vy)) * dt / 4))
@@ -445,6 +468,9 @@ class Game:
             if g not in self.revealed and overlaps(touch, g):
                 self.revealed.add(g)
                 self.rect(*g, SOLID)
+        self.update_mines(self.on_ground and not was_ground)
+        if self.state == DYING:
+            return
         hit = any(overlaps(box, self.bullet_rect(b)) for b in self.bullets) or any(
             disc_hits(box, d["x"], d["y"], DISC_R - 1) for d in self.discs)
         if self.y > H or hit or any(overlaps(box, s) for s in self.spikes + self.decoys):
@@ -456,6 +482,59 @@ class Game:
             self.state, self.enter_t, self.shut = ENTER, 0.0, 0
             self.vx = self.vy = 0.0
             self.draw_door(self.entering)
+
+    def update_mines(self, landed):
+        for m in self.mines:
+            if m["state"] == "gone":
+                continue
+            on = (self.on_ground and abs(self.y + PH - m["s"]) < 0.5
+                  and self.x < m["x"] + TILE and m["x"] < self.x + PW)
+            if m["state"] == "armed" and on:
+                if landed or not m["lethal"]:  # Land on it, and it goes off right then.
+                    self.burst(m)
+                    continue
+                m["state"], m["t"] = "fuse", self.level_time  # Walked on: keep moving.
+                self.draw_mine(m)
+            elif m["state"] == "fuse" and self.level_time - m["t"] >= MINE_FUSE:
+                self.burst(m)
+        for b in list(self.blasts):
+            if self.level_time - b[2] >= BLAST_TIME:
+                self.blasts.remove(b)
+                self.repair(b[3])
+
+    def burst(self, m):
+        m["state"] = "gone"
+        cx, cy = m["x"] + TILE // 2, m["s"] - 6
+        self.disc(cx, cy, BLAST_R, SPIKE)
+        self.disc(cx, cy, BLAST_R // 2, DOOR)
+        area = (cx - BLAST_R, cy - BLAST_R, 2 * BLAST_R + 1, 2 * BLAST_R + 1)
+        if m["host"] in self.ghosts:  # The step under the mine is blown away.
+            self.ghosts.remove(m["host"])
+            hx, hy, hw, hh = m["host"]
+            x0, y0 = min(area[0], hx), min(area[1], hy)
+            area = (x0, y0, max(area[0] + area[2], hx + hw) - x0, max(area[1] + area[3], hy + hh) - y0)
+        self.blasts.append((cx, cy, self.level_time, area))
+        if m["lethal"] and overlaps(self.box(), (m["x"] - 8, m["s"] - 48, TILE + 16, 48)):
+            self.deaths += 1
+            self.state, self.die_t = DYING, 0.0
+
+    def mine_box(self, m):
+        return (m["x"] + 8, m["s"] - 9, 16, 9)
+
+    def draw_mine(self, m):
+        x, y = m["x"] + 8, m["s"]
+        self.rect(x, y - 6, 16, 6, INK)
+        self.rect(x + 6, y - 9, 4, 3, DOOR if m["state"] == "fuse" else SPIKE)  # Lit fuse goes white.
+
+    def repair(self, area):
+        """Repaint an area from the level as it is now."""
+        self.draw_strip(area)
+        for s in self.spikes:
+            if overlaps(area, s):
+                self.spike(s)
+        self.draw_decor(area)
+        if not self.gone and self.drawn and overlaps(area, (*self.drawn, PW, PH)):
+            self.sprite()
 
     def player_frame(self):
         if not self.on_ground and self.vy:  # A level that just loaded has not landed yet.
@@ -513,7 +592,7 @@ class Game:
                     self.rect(*arg, SOLID)
                 elif kind == "spike":
                     self.spikes.append(arg)
-                    self.rect(*arg, SPIKE)
+                    self.spike(arg)
                 elif kind == "door":
                     self.rect(*self.door, BG)
                     self.door = arg
@@ -591,6 +670,9 @@ class Game:
         for d in self.discs:  # Discs crossing each other: repaint the one that got cut.
             if any(m is not d and overlaps(area, box(d["drawn"])) for m, area in moved):
                 self.cmds.append(struct.pack("<chhhH", b"O", *d["drawn"], DISC_R, SPIKE))
+        for m in self.mines:
+            if m["state"] != "gone" and any(overlaps(area, self.mine_box(m)) for _, area in moved):
+                self.draw_mine(m)
         if self.drawn and any(overlaps(area, (*self.drawn, PW, PH)) for _, area in moved):
             if not self.gone:
                 self.sprite()  # Keep the player on top of a near miss.
@@ -602,7 +684,7 @@ class Game:
                 spike = (x, s[1] - 12, 20, 12)
                 if not overlaps(spike, self.door):
                     self.spikes.append(spike)
-                    self.rect(*spike, SPIKE)
+                    self.spike(spike)
                 return
 
     def surprise(self, kind):
@@ -646,7 +728,10 @@ class Game:
     def show_trap(self, trap, color):
         visible = self.trap_visible(trap)
         if visible != trap["shown"]:  # Only tiles whose look changed get redrawn.
-            self.rect(*trap["rect"], color if visible else BG)
+            if visible and color == SPIKE:
+                self.spike(trap["rect"])
+            else:
+                self.rect(*trap["rect"], color if visible else BG)
             trap["shown"] = visible
 
     def update_traps(self):
@@ -691,9 +776,13 @@ class Game:
                 self.draw_door(d)
                 drew = True
         shown = [t["rect"] for t in self.hidden if t["shown"]]
-        for s, color in [(s, SPIKE) for s in self.fakes + shown] + [(b, INK) for b in self.barrels()]:
+        for s in self.fakes + shown:
             if area is None or overlaps(area, s):
-                self.rect(*s, color)
+                self.spike(s)
+                drew = True
+        for b in self.barrels():
+            if area is None or overlaps(area, b):
+                self.rect(*b, INK)
                 drew = True
         if area is not None:
             for b in self.bullets:
@@ -703,13 +792,16 @@ class Game:
                 if d["drawn"] and overlaps(area, (d["drawn"][0] - DISC_R, d["drawn"][1] - DISC_R,
                                                   2 * DISC_R + 1, 2 * DISC_R + 1)):
                     self.cmds.append(struct.pack("<chhhH", b"O", *d["drawn"], DISC_R, SPIKE))
+            for m in self.mines:
+                if m["state"] != "gone" and overlaps(area, self.mine_box(m)):
+                    self.draw_mine(m)
         return drew
 
     def scene(self):
         """The level as (rect, color) in draw order, for drawing it inside a strip."""
         items = [((0, 0, W, H), BG)] + [(s, SOLID) for s in self.solids if s]
         items += [(g, SOLID) for g in self.revealed if g in self.ghosts]
-        items += [(s, SPIKE) for s in self.spikes + self.fakes] + [(b, INK) for b in self.barrels()]
+        items += [(b, INK) for b in self.barrels()]  # Spikes are teeth; repair() adds them.
         for x, y, w, h in [self.door] + self.more_doors + self.decoys:
             items += [((x, y, w, h), INK), ((x + 3, y + 3, w - 6, h - 3), DOOR)]
         if self.slider:
@@ -745,9 +837,9 @@ class Game:
         elif t < DOORS_CLOSE + DOORS_HOLD + DOORS_OPEN:
             if self.eyes:
                 self.draw_eyes(shut=True)  # Fed: the devil shuts its eyes as it opens up.
-            self.jaws(round(half * (1 - ease((t - DOORS_CLOSE - DOORS_HOLD) / DOORS_OPEN))), self.reveal)
+            self.jaws(round(half * (1 - ease((t - DOORS_CLOSE - DOORS_HOLD) / DOORS_OPEN))), self.repair)
         else:
-            self.jaws(0, self.reveal)
+            self.jaws(0, self.repair)
             self.draw_hud()
             self.state = PLAYING
 
@@ -784,11 +876,6 @@ class Game:
             for i in range(6):  # Angry brow, sloping down toward the nose.
                 self.rect(cx - 45 + 14 * i if look > 0 else cx + 31 - 14 * i, 30 + 3 * i, 14, 7, INK)
 
-    def reveal(self, area):
-        self.draw_strip(area)
-        if not self.gone and overlaps(area, (*self.drawn, PW, PH)):
-            self.sprite()
-
     def redraw(self):
         self.clear(BG)
         for s in self.solids:
@@ -798,7 +885,7 @@ class Game:
             if g in self.revealed:
                 self.rect(*g, SOLID)
         for s in self.spikes:
-            self.rect(*s, SPIKE)
+            self.spike(s)
         for trap in self.hidden + self.crumble:
             trap["shown"] = self.trap_visible(trap)
             if not trap["shown"] and trap["state"] == "flicker":
@@ -809,12 +896,18 @@ class Game:
         for m in self.bullets + self.discs:
             m["drawn"] = None
         self.draw_movers()
+        for m in self.mines:  # After the discs, as when a disc rolls past one.
+            if m["state"] != "gone":
+                self.draw_mine(m)
+        for cx, cy, _, _ in self.blasts:
+            self.disc(cx, cy, BLAST_R, SPIKE)
+            self.disc(cx, cy, BLAST_R // 2, DOOR)
         self.draw_hud()
         self.drawn = (round(self.x), round(self.y))
         self.drawn_frame = self.player_frame()
         if not self.gone:
             self.sprite()
-        if self.state != PLAYING or not self.connected & 2:
+        if self.state not in (PLAYING, DYING) or not self.playable():
             self.draw_overlay()
 
     def draw_hud(self):
@@ -826,14 +919,14 @@ class Game:
         self.text(W - 4 - 12 * len(deaths), 4, 2, ink, paper, deaths)
         if not self.connected & 1:
             self.text(4, 22, 1, ink, paper, "Buttons off: press the stick to jump")
-        elif self.slider and not self.connected & 4:
-            self.text(4, 22, 1, ink, paper, "Tilt off: the blue platform moves itself")
 
     def draw_overlay(self):
         if not self.connected & 2:
             lines = ["Joystick disconnected", "Check the Qwiic cable.", "Game resumes when it's back"]
+        elif self.slider and not self.connected & 4 and self.state in (PLAYING, CALIBRATE):
+            lines = ["Movement disconnected", "This level needs tilt.", "Plug the Movement", "module back in."]
         elif self.state == CALIBRATE:
-            lines = ["Tilt check", "Tilt the console to", "the RIGHT, then level", "it again.  A skips"]
+            lines = ["Tilt check", "Tilt the console to", "the RIGHT, then level", "it again to play."]
         elif self.state == PAUSED:
             lines = ["Paused", "B to resume", "C to retry the level", "C twice to start over"]
         elif self.state == READY:

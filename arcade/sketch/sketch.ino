@@ -408,6 +408,24 @@ void drawTeeth(int y, int h, int tw, bool up, int phase, uint16_t color, uint16_
   }
 }
 
+// n teeth pointing up, filling a w x h box: how spikes look.
+void drawSpikes(int x0, int y0, int w, int h, int n, uint16_t color, uint16_t bg) {
+  if (n < 1 || w < 1 || h < 1) return;
+  for (int r = 0; r < h; ++r) {
+    for (int x = 0; x < w;) {
+      bool tooth = abs((2 * x + 1) * n - (2 * (x * n / w) + 1) * w) * h < w * (r + 1);
+      int run = 1;
+      while (x + run < w) {
+        int xx = x + run;
+        if ((abs((2 * xx + 1) * n - (2 * (xx * n / w) + 1) * w) * h < w * (r + 1)) != tooth) break;
+        ++run;
+      }
+      fillArea(x0 + x, y0 + r, run, 1, tooth ? color : bg);
+      x += run;
+    }
+  }
+}
+
 int16_t read16(const uint8_t* p) { return (int16_t)(p[0] | (p[1] << 8)); }
 
 // Slide a w x h rect along x from x0 to x1 (x0 = -32768: not drawn yet).
@@ -426,7 +444,8 @@ void slideRect(int x0, int x1, int y, int w, int h, uint16_t color, uint16_t bg)
 
 // Commands, little-endian: 'C' color | 'R' x y w h color | 'O' x y r color |
 // 'M' x0 y0 x1 y1 r color bg | 'B' n w h color bg, then n x (x0 x1 y) |
-// 'S' x y frame color | 'J' y h tw up phase color gap | 'T' x y size fg bg len text.
+// 'S' x y frame color | 'J' y h tw up phase color gap | 'K' x y w h n color bg |
+// 'T' x y size fg bg len text.
 void runDrawCommands(const uint8_t* p, size_t n) {
   size_t i = 0;
   while (i < n) {
@@ -460,6 +479,10 @@ void runDrawCommands(const uint8_t* p, size_t n) {
       drawTeeth(read16(p + i + 1), p[i + 3], p[i + 4], p[i + 5], p[i + 6],
                 (uint16_t)read16(p + i + 7), (uint16_t)read16(p + i + 9));
       i += 11;
+    } else if (op == 'K' && i + 14 <= n) {
+      drawSpikes(read16(p + i + 1), read16(p + i + 3), read16(p + i + 5), read16(p + i + 7), p[i + 9],
+                 (uint16_t)read16(p + i + 10), (uint16_t)read16(p + i + 12));
+      i += 14;
     } else if (op == 'T' && i + 11 <= n && i + 11 + p[i + 10] <= n) {
       drawText(read16(p + i + 1), read16(p + i + 3), p[i + 5],
                (uint16_t)read16(p + i + 6), (uint16_t)read16(p + i + 8), p + i + 11, p[i + 10]);
