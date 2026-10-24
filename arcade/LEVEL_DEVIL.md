@@ -4,23 +4,42 @@ A troll platformer for the UNO Q arcade console, inspired by the browser game Le
 
 ## How to play
 
-Get the player to the white door on each of the five levels. Your death count and total time show at the end.
+Get the player to the white door on each of the eight levels. Your death count and total time show at the end.
 
 | Control | Action |
 | --- | --- |
 | Joystick left/right | Run |
 | A (or joystick press) | Jump |
 | Tilt the console left/right | Move the blue platforms (levels 4 and 5) |
+| B | Pause; B again resumes |
 | C | Restart the current level; from the end screen, play again |
-| B | Not used |
 
 The levels:
 
 1. Easy start. Part of the floor drops out ahead of you.
 2. Spiky. You can see the first spike. The second one pops up as you get close, and then the door moves back to where you started.
 3. Mind the gap. A spike appears right before a gap, so you have to clear both in one jump.
-4. Tilt it. The gap is too wide to jump. Stand on the blue platform and tilt the console to ride it across. The first time you reach this level, the game asks you to tilt the console to the right. It uses that to learn which way the Movement module is mounted, so tilting right always moves the platform right. Press A to skip the check.
-5. The devil. Tilt across, then watch your step.
+4. Not everything bites. One spike is fake and one is hidden until you get close.
+5. The floor is a liar. Part of the floor collapses under you, so keep moving.
+6. Nothing is what it seems. The door on the ground kills you. The real one is up top.
+7. Tilt it. The gap is too wide to jump. Stand on the blue platform and tilt the console to ride it across. The first time you reach this level, the game asks you to tilt the console to the right. It uses that to learn which way the Movement module is mounted, so tilting right always moves the platform right. Press A to skip the check.
+8. The devil. Tilt across, then watch your step.
+
+Between levels, two doors close from the top and bottom, show the next level's name, and open on it (1.5 s).
+
+Levels 4 to 6 are tile maps in `python/levels.py`, 15 x 10 tiles of 32 px:
+
+| Tile | Meaning |
+| --- | --- |
+| `#` `.` | Solid, empty |
+| `P` `D` | Player start, real exit |
+| `^` | Spike |
+| `F` | Fake spike: looks like a spike, harmless |
+| `s` | Hidden spike: appears when you get within 2 tiles, flickers for 0.4 s, then kills |
+| `v` | Collapsing floor: looks solid, flickers for 0.4 s after you stand on it, then drops away |
+| `d` | Decoy exit: looks like the door, kills you |
+
+Check the maps with `python3 scripts/test_levels.py`. Set `DEBUG_TRAPS = True` in `python/levdevil.py` to print every trap state change to `make logs`.
 
 ## When a control is missing
 
