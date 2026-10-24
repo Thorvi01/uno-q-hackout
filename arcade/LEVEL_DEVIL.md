@@ -34,7 +34,13 @@ Every frame, the game checks which Modulino modules answered.
 
 You need the console connected over USB-C, the board online, and adb on your computer (macOS: `brew install --cask android-platform-tools`).
 
-From this `arcade/` folder:
+From this `arcade/` folder, the quickest way is one script. It waits for the board, checks its internet and clock, flashes, and then follows the logs:
+
+```sh
+sh scripts/go.sh
+```
+
+The same steps by hand:
 
 ```sh
 make flash   # package, copy to the board, compile the sketch, start Python
@@ -42,7 +48,7 @@ make logs    # follow Python output (Ctrl+C to leave; the game keeps running)
 make stop    # stop the game
 ```
 
-Or run `make package` and import `build/uno-q-arcade.zip` into Arduino App Lab under My Apps, then Run.
+Or import `zip/uno-q-arcade.zip` into Arduino App Lab under My Apps, then Run. Rebuild it with `make package` after changing the code.
 
 The first run downloads libraries and needs the board's clock to be right. If the build fails with "signature expired: is your system clock set correctly?", fix the board's date first.
 
