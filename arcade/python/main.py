@@ -1,4 +1,3 @@
-import json
 import time
 
 from arduino.app_utils import App, Bridge
@@ -18,7 +17,7 @@ def loop():
     t0 = time.monotonic()
     try:
         t1 = time.monotonic()
-        inputs = json.loads(Bridge.call("arcade_read_inputs", timeout=1))
+        inputs = game.exchange()  # Draws the last frame and reads the controls in one call.
         _t_read += time.monotonic() - t1
 
         if inputs.get("video", 0):
@@ -34,12 +33,12 @@ def loop():
         # A failed call may leave a half-drawn screen, so redraw everything next time.
         print(f"Arcade connection/input error: {error}")
         game.drawn = None
+        game.cmds = []
         time.sleep(1)
         return
 
     _t_loop += time.monotonic() - t0
     _frames += 1
-    time.sleep(0.01)
 
     now = time.monotonic()
     if now - _report_at >= 1.0:
@@ -47,7 +46,7 @@ def loop():
         n = max(_frames, 1)
         print(
             f"fps={_frames / elapsed:.1f}  "
-            f"read={1000 * _t_read / n:.1f}ms  "
+            f"bridge={1000 * _t_read / n:.1f}ms  "
             f"tick(draw)={1000 * _t_tick / n:.1f}ms  "
             f"loop={1000 * _t_loop / n:.1f}ms",
             flush=True,

@@ -3,6 +3,7 @@
 Game rules run here in Python; the sketch only draws (game_* Bridge calls).
 """
 import math
+import struct
 
 from preview import calibrated
 
@@ -63,6 +64,9 @@ LEVELS = [
      "traps": [{"when": (330, 480), "do": [("remove", 2)]}]},
 ]
 
+MAX_BATCH = 200  # Drawing bytes per Bridge call; the MCU accepts 256-byte messages.
+INPUT_KEYS = ("video", "connected", "buttons", "x", "y", "ax", "ay", "az", "reset")
+
 READY, PLAYING, CALIBRATE, RESULT = "ready", "playing", "calibrate", "result"
 
 
@@ -72,9 +76,8 @@ def overlaps(a, b):
 
 class Game:
     def __init__(self, bridge):
-        # Fail fast (Bridge's default timeout is 10 s) so main.py can recover and redraw.
-        self.call = lambda method, *args: bridge.call(method, *args, timeout=1)
         self.bridge = bridge
+        self.cmds = []  # Drawing queued during a tick, sent with the next frame call.
         self.prev_buttons = 0
         self.connected = None
         self.tilt_axis = None  # Learned on the first tilt level: (index into (ax, ay), sign).
@@ -104,8 +107,35 @@ class Game:
         self.drawn = None  # Player position on screen; None forces a full redraw.
         self.slider_drawn = None
 
+    def exchange(self):
+        """Send the queued drawing and return fresh inputs: one Bridge call per frame."""
+        chunks, chunk = [], b""
+        for cmd in self.cmds:
+            if len(chunk) + len(cmd) > MAX_BATCH:
+                chunks.append(chunk)
+                chunk = b""
+            chunk += cmd
+        chunks.append(chunk)
+        self.cmds = []
+        # Fail fast so main.py can recover; a full-screen clear gets longer.
+        timeout = lambda c: 5 if c[:1] == b"C" else 1
+        for c in chunks[:-1]:
+            self.bridge.call("game_draw", c, timeout=timeout(c))
+        reply = self.bridge.call("game_frame", chunks[-1], timeout=timeout(chunks[-1]))
+        return dict(zip(INPUT_KEYS, map(int, reply.split(","))))
+
+    def clear(self, color):
+        self.cmds = [struct.pack("<cH", b"C", color)]  # Anything queued before is covered.
+
+    def rect(self, x, y, w, h, color):
+        self.cmds.append(struct.pack("<chhhhH", b"R", x, y, w, h, color))
+
+    def text(self, x, y, size, fg, bg, line):
+        data = line.encode("ascii", "replace")[:60]
+        self.cmds.append(struct.pack("<chhBHHB", b"T", x, y, size, fg, bg, len(data)) + data)
+
     def tick(self, inputs, dt):
-        if self.call("game_ping"):
+        if inputs.get("reset"):
             self.drawn = None  # The sketch showed its waiting screen.
         stick_x, _, buttons, ax, ay, az, connected = calibrated(inputs)
         pressed = buttons & ~self.prev_buttons  # New presses only.
@@ -243,45 +273,43 @@ class Game:
             self.fired[i] = True
             for kind, arg in trap["do"]:
                 if kind == "remove":
-                    self.call("game_rect", *self.solids[arg], BG)
+                    self.rect(*self.solids[arg], BG)
                     self.solids[arg] = None
                 elif kind == "solid":
                     self.solids.append(arg)
-                    self.call("game_rect", *arg, SOLID)
+                    self.rect(*arg, SOLID)
                 elif kind == "spike":
                     self.spikes.append(arg)
-                    self.call("game_rect", *arg, SPIKE)
+                    self.rect(*arg, SPIKE)
                 elif kind == "door":
-                    self.call("game_rect", *self.door, BG)
+                    self.rect(*self.door, BG)
                     self.door = arg
                     self.draw_door()
 
     def draw_door(self):
         x, y, w, h = self.door
-        self.call("game_rect", x, y, w, h, INK)
-        self.call("game_rect", x + 3, y + 3, w - 6, h - 3, DOOR)
+        self.rect(x, y, w, h, INK)
+        self.rect(x + 3, y + 3, w - 6, h - 3, DOOR)
 
     def redraw(self):
-        call = self.call
-        # A full-screen fill can outlast the 1 s timeout; a timeout here would loop forever.
-        self.bridge.call("game_clear", BG, timeout=5)
+        self.clear(BG)
         for s in self.solids:
             if s:
-                call("game_rect", *s, SOLID)
+                self.rect(*s, SOLID)
         for s in self.spikes:
-            call("game_rect", *s, SPIKE)
+            self.rect(*s, SPIKE)
         self.draw_door()
         self.slider_drawn = None
         self.draw_slider()
         level = LEVELS[self.level]
-        call("game_text", 8, 4, 2, INK, BG,
+        self.text(8, 4, 2, INK, BG,
              f"{self.level + 1}/{len(LEVELS)} {level['name']}   Deaths {self.deaths}")
         if not self.connected & 1:
-            call("game_text", 8, 22, 1, INK, BG, "Buttons off: press the stick to jump")
+            self.text(8, 22, 1, INK, BG, "Buttons off: press the stick to jump")
         elif self.slider and not self.connected & 4:
-            call("game_text", 8, 22, 1, INK, BG, "Tilt off: the blue platform moves itself")
+            self.text(8, 22, 1, INK, BG, "Tilt off: the blue platform moves itself")
         self.drawn = (round(self.x), round(self.y))
-        call("game_rect", *self.drawn, PW, PH, INK)
+        self.rect(*self.drawn, PW, PH, INK)
         if self.state != PLAYING or not self.connected & 2:
             self.draw_overlay()
 
@@ -296,22 +324,21 @@ class Game:
         else:
             lines = ["You escaped!", f"Deaths {self.deaths}  Time {self.elapsed:.0f}s",
                      "Press C to play again"]
-        call = self.call
         height = 40 + 24 * len(lines)
-        call("game_rect", 60, 60, 360, height, INK)
-        call("game_rect", 63, 63, 354, height - 6, BG)
+        self.rect(60, 60, 360, height, INK)
+        self.rect(63, 63, 354, height - 6, BG)
         for i, line in enumerate(lines):
-            call("game_text", 80, 80 + 24 * i, 2, INK, BG, line)
+            self.text(80, 80 + 24 * i, 2, INK, BG, line)
 
     def draw_player(self):
         pos = (round(self.x), round(self.y))
         if pos == self.drawn:
             return
         old = (*self.drawn, PW, PH)
-        self.call("game_rect", *old, BG)
+        self.rect(*old, BG)
         if overlaps(old, self.door):
             self.draw_door()
-        self.call("game_rect", *pos, PW, PH, INK)
+        self.rect(*pos, PW, PH, INK)
         self.drawn = pos
 
     def draw_slider(self):
@@ -324,12 +351,12 @@ class Game:
         _, y, w, h = self.slider
         if old is None or abs(x - old) >= w:
             if old is not None:
-                self.call("game_rect", old, y, w, h, BG)
-            self.call("game_rect", x, y, w, h, SLIDER)
+                self.rect(old, y, w, h, BG)
+            self.rect(x, y, w, h, SLIDER)
         elif x > old:  # Erase the trailing strip, paint the leading one.
-            self.call("game_rect", old, y, x - old, h, BG)
-            self.call("game_rect", old + w, y, x - old, h, SLIDER)
+            self.rect(old, y, x - old, h, BG)
+            self.rect(old + w, y, x - old, h, SLIDER)
         else:
-            self.call("game_rect", x + w, y, old - x, h, BG)
-            self.call("game_rect", x, y, old - x, h, SLIDER)
+            self.rect(x + w, y, old - x, h, BG)
+            self.rect(x, y, old - x, h, SLIDER)
         self.slider_drawn = x

@@ -54,7 +54,7 @@ The first run downloads libraries and needs the board's clock to be right. If th
 
 ## Settings
 
-Display controller, in `sketch/sketch.ino`: `ARCADE_TFT_HX8357D` is `1` for HX8357D (our console) and `0` for RM68140.
+Display controller, in `sketch/sketch.ino`: `ARCADE_TFT_HX8357D` is `1` for HX8357D (our console) and `0` for RM68140. `ARCADE_FAST_TFT` is `1` by default; set it to `0` to draw through the DIYables library instead (correct but about 2 s per full-screen redraw).
 
 Control calibration, in `python/preview.py`:
 
@@ -62,7 +62,7 @@ Control calibration, in `python/preview.py`:
 DEAD_ZONE = 26
 INVERT_X = False
 INVERT_Y = True
-MOVEMENT_ZERO_MG = (50, -75, 1034)
+MOVEMENT_ZERO_MG = (-15, -994, 13)
 MOVEMENT_DEAD_ZONE_MG = 20
 ```
 
@@ -81,7 +81,13 @@ Tilt and feel, in `python/levdevil.py`:
 
 ## How it works
 
-Python on the Linux side owns the game: levels, physics, traps and screens (`python/levdevil.py`, driven by `python/main.py`). The sketch on the microcontroller reads the Modulinos and draws on the TFT. Python asks it to draw through five Bridge calls added to `sketch/sketch.ino`: `game_ping`, `game_clear`, `game_rect`, `game_circle` and `game_text`. Each frame redraws only what moved or changed, usually just the player and sometimes a platform or a trap. The whole screen is redrawn only when a level starts or you die. `game_ping` runs every frame so the sketch's 1.5-second "Waiting for App Lab" screen never cuts in, and it tells Python to redraw if that screen did appear.
+Python on the Linux side owns the game: levels, physics, traps and screens (`python/levdevil.py`, driven by `python/main.py`). The sketch on the microcontroller reads the Modulinos and draws on the TFT.
+
+Each frame is one Bridge call, `game_frame`. Python sends the drawing it queued in the last tick as a small binary batch (fill screen, fill rectangle, text), and the sketch draws it, reads the controls and replies with a short comma-separated line. A batch over 200 bytes goes out first through `game_draw`. Only what moved gets redrawn, usually just the player and sometimes a platform or a trap. The whole screen is redrawn when a level starts or you die. On the console this runs at about 85 frames per second, roughly 11 ms per frame.
+
+The DIYables library drives the UNO Q's display pins one `digitalWrite` at a time, which takes about 2 s for a full screen. The sketch writes the same pins through the STM32 GPIO set/reset registers instead. It takes the pin numbers from the board's devicetree, so a full redraw takes a few tens of milliseconds.
+
+If the board's MCU loader doesn't match the pinned Zephyr 0.55.2 core, sketches upload but never start. Python then reports "method ... not available". Flash the core's loader (`firmwares/zephyr-arduino_uno_q_stm32u585xx.elf`) with `/opt/openocd/bin/arduino-flash.sh` on the board, as described under "Board software" in `README.md`.
 
 Levels are plain data at the top of `levdevil.py`. A trap is a trigger range plus actions: remove a floor, add a spike, add a floor, or move the door. Adding a level means adding one more entry to `LEVELS`.
 
