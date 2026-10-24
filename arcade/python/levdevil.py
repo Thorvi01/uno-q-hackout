@@ -22,8 +22,10 @@ SOLID = rgb(70, 40, 20)
 SPIKE = rgb(200, 20, 20)
 DOOR = rgb(255, 255, 255)
 SLIDER = rgb(40, 90, 220)
+WATER = rgb(50, 120, 230)
+ACID = rgb(170, 230, 20)  # mountain-dew green
 
-PW, PH = 14, 18      # player size
+PW, PH = 16, 22      # player size
 GRAVITY = 1400.0     # px/s^2
 RUN = 170.0          # px/s
 JUMP = 480.0         # px/s upward
@@ -50,7 +52,14 @@ DISC_SPEED = {"x": 110.0, "y": 150.0}  # px/s
 MOVE_STEP = 2          # px a bullet or disc moves before it is repainted
 # Player frames in the sketch's SPRITES table; FLIP mirrors one to face left.
 STAND, RUN_CYCLE, JUMP_FRAME, FLIP = 0, (1, 2, 3, 2), 4, 0x80
-STRIDE = 8             # px run per animation frame
+ROW_CYCLE = (5, 6, 7, 6)  # sitting in the boat, rowing
+STRIDE, ROW_STRIDE = 8, 5  # px moved per animation frame
+SIT_DROP = 8           # a seated frame is drawn this much lower, legs inside the boat
+HANDS = {5: (14, 9), 6: (12, 10), 7: (11, 11)}  # oar grip in each rowing frame
+BLADE = {5: -10, 6: -16, 7: -22}  # where the oar meets the water, from the grip
+# The river: water (acid once you reach the island), a boat the player rows.
+WATER_Y, HULL_Y, HULL_W, HULL_H = 272, 258, 64, 14
+BOAT_SPEED, POP_LIFE = 80.0, 0.7
 ENTER_SPEED, ENTER_PAUSE, ENTER_SHUT = 90.0, 0.12, 0.3  # walking into the door, then it shuts
 TEETH_H, TEETH_W, CHOMP = 18, 24, 22  # devil jaws: teeth strip, tooth width, chomp gap (px)
 EYES_BOTTOM = 112      # the devil's eyes show once its upper jaw covers this row
@@ -61,25 +70,25 @@ MINE_FUSE, BLAST_TIME, DIE_TIME, BLAST_R = 0.4, 0.3, 0.45, 22
 # enters "when"; "remove" takes an index into solids. A slider is
 # (x, y, w, h, x_min, x_max) and follows the console's tilt.
 RECT_LEVELS = [
-    {"name": "Easy start", "start": (20, 262), "door": (440, 240, 24, 40),
+    {"name": "Easy start", "start": (20, 280 - PH), "door": (440, 240, 24, 40),
      "solids": [(0, 280, 230, 40), (230, 280, 70, 40), (300, 280, 180, 40)],
      "spikes": [],
      "traps": [{"when": (190, 480), "do": [("remove", 1)]}]},
-    {"name": "Spiky", "start": (20, 262), "door": (440, 240, 24, 40),
+    {"name": "Spiky", "start": (20, 280 - PH), "door": (440, 240, 24, 40),
      "solids": [(0, 280, 480, 40)],
      "spikes": [(180, 268, 30, 12)],
      "traps": [{"when": (290, 480), "do": [("spike", (330, 268, 40, 12))]},
                {"when": (400, 480), "do": [("door", (20, 240, 24, 40))]}]},
-    {"name": "Mind the gap", "start": (20, 262), "door": (445, 240, 24, 40),
+    {"name": "Mind the gap", "start": (20, 280 - PH), "door": (445, 240, 24, 40),
      "solids": [(0, 280, 140, 40), (220, 280, 120, 40), (370, 280, 110, 40)],
      "spikes": [],
      "traps": [{"when": (240, 480), "do": [("spike", (300, 268, 20, 12))]}]},
-    {"name": "Tilt it", "start": (20, 262), "door": (445, 240, 24, 40),
+    {"name": "Tilt it", "start": (20, 280 - PH), "door": (445, 240, 24, 40),
      "solids": [(0, 280, 110, 40), (400, 280, 80, 40)],
      "spikes": [],
      "slider": (110, 280, 70, 12, 110, 330),
      "traps": [{"when": (410, 480), "do": [("door", (20, 240, 24, 40))]}]},
-    {"name": "The devil", "start": (20, 262), "door": (450, 240, 24, 40),
+    {"name": "The devil", "start": (20, 280 - PH), "door": (450, 240, 24, 40),
      "solids": [(0, 280, 100, 40), (310, 280, 70, 40), (380, 280, 40, 40), (420, 280, 60, 40)],
      "spikes": [],
      "slider": (100, 280, 60, 12, 100, 250),
@@ -142,10 +151,24 @@ def from_map(entry):
     return level
 
 
+ISLAND_LEVELS = [
+    # Row to the island; the river turns to acid and the boat sinks. A block pops up as you leap
+    # for the door, then goes; the door on the ledge is fake, and the real one shows up low down.
+    # The island is out of jump range from the start, so you have to row.
+    {"name": "Up the creek", "region": "Islands", "river": True, "start": (28, HULL_Y - PH),
+     "door": (440, 130, 24, 40), "boat": 4,
+     "solids": [(200, 240, 70, 80), (410, 170, 70, 14)], "spikes": [], "traps": [],
+     "pop": (300, 225, 44, 20), "true_door": (302, 222, 24, 40),
+     "rock": (290, 262, 48, 58), "middle": (360, 205, 40, 20)},
+]
+
 levels.validate()
 # Levels 1-3 rects, 4-6 tile maps, 7-8 tilt, 9-11 tile maps (bullets, invisible steps, discs).
 MAPS = [from_map(m) for m in levels.LEVELS]
 LEVELS = RECT_LEVELS[:3] + MAPS[:3] + RECT_LEVELS[3:] + MAPS[3:]
+LEVELS += ISLAND_LEVELS
+REGIONS = [("Mountains and Mines", 0, len(LEVELS) - len(ISLAND_LEVELS)),
+           ("Islands", len(LEVELS) - len(ISLAND_LEVELS), len(ISLAND_LEVELS))]
 MAPS[4]["step_mine"] = True  # Leap of faith: one invisible step carries a mine that blows it away.
 for level, kind in zip(LEVELS[5:], ("gate", "tilt", "devil")):
     level["surprise"] = kind
@@ -153,8 +176,20 @@ for level, kind in zip(LEVELS[5:], ("gate", "tilt", "devil")):
 MAX_BATCH = 200  # Drawing bytes per Bridge call; the MCU accepts 256-byte messages.
 INPUT_KEYS = ("video", "connected", "buttons", "x", "y", "ax", "ay", "az", "reset")
 
-READY, PLAYING, CALIBRATE, PAUSED, DYING, ENTER, TRANSITION, RESULT = (
-    "ready", "playing", "calibrate", "paused", "dying", "enter", "transition", "result")
+READY, MAP, PLAYING, CALIBRATE, PAUSED, DYING, ENTER, TRANSITION, RESULT = (
+    "ready", "map", "playing", "calibrate", "paused", "dying", "enter", "transition", "result")
+
+
+def region_of(index):
+    """(region name, position in it, its size) for a level index."""
+    for name, start, count in REGIONS:
+        if start <= index < start + count:
+            return name, index - start, count
+
+
+def union(a, b):
+    x0, y0 = min(a[0], b[0]), min(a[1], b[1])
+    return (x0, y0, max(a[0] + a[2], b[0] + b[2]) - x0, max(a[1] + a[3], b[1] + b[3]) - y0)
 
 
 def overlaps(a, b):
@@ -187,10 +222,12 @@ class Game:
         self.connected = None
         self.tilt_axis = None  # Learned on the first tilt level: (index into (ax, ay), sign).
         self.ghost_level = None  # Invisible steps found stay found until the level changes.
+        self.stick_held = False  # Menus move one step per push of the stick.
         self.new_game()
 
     def new_game(self):
         self.tilt_axis = None  # Every run starts with the tilt check on the first tilt level.
+        self.menu = 0  # Title menu: 0 Play, 1 Map.
         self.level = 0
         self.deaths = 0
         self.elapsed = 0.0
@@ -229,6 +266,10 @@ class Game:
                                  "index": len(self.solids)})
             self.solids.append(r)
         self.trap_near, self.spike_delay, self.floor_delay = TRAP_NEAR, FLICKER, FLICKER
+        self.river = level.get("river", False)
+        self.in_boat, self.boat_x, self.boat_drawn, self.row_dist = self.river, None, None, 0.0
+        if self.river:
+            self.boat_x, self.acid, self.pop, self.swapped = float(level["boat"]), False, None, False
         self.tilt_flip = False
         # Bullets and discs start at a new point in their cycle every life.
         self.cannons = [{"x": x, "y": y, "dir": d, "phase": random.uniform(0, CANNON_PERIOD), "shots": 0}
@@ -269,7 +310,10 @@ class Game:
         return dict(zip(INPUT_KEYS, map(int, reply.split(","))))
 
     def sprite(self):
-        self.cmds.append(struct.pack("<chhBH", b"S", *self.drawn, self.drawn_frame, INK))
+        x, y = self.drawn
+        if (self.drawn_frame & 0x7F) in HANDS:
+            y += SIT_DROP
+        self.cmds.append(struct.pack("<chhBH", b"S", x, y, self.drawn_frame, INK))
 
     def spike(self, rect):
         """A spike strip drawn as a row of red teeth."""
@@ -296,13 +340,22 @@ class Game:
     def tick(self, inputs, dt):
         if inputs.get("reset"):
             self.drawn = None  # The sketch showed its waiting screen.
-        stick_x, _, buttons, ax, ay, az, connected = calibrated(inputs)
+        stick_x, stick_y, buttons, ax, ay, az, connected = calibrated(inputs)
         pressed = buttons & ~self.prev_buttons  # New presses only.
         self.prev_buttons = buttons
         if connected != self.connected:
             self.connected = connected
             self.drawn = None
         playable = self.playable()
+        nav_x = nav_y = 0
+        if max(abs(stick_x), abs(stick_y)) > 60 and not self.stick_held:
+            self.stick_held = True
+            if abs(stick_x) > abs(stick_y):
+                nav_x = 1 if stick_x > 0 else -1
+            else:
+                nav_y = 1 if stick_y > 0 else -1  # positive is down
+        elif max(abs(stick_x), abs(stick_y)) < 30:
+            self.stick_held = False
         self.clock += dt
         if pressed & 4:
             if self.clock - self.last_c <= DOUBLE_C or self.state == RESULT:
@@ -349,9 +402,18 @@ class Game:
         elif self.state == PLAYING and pressed & 2:  # B pauses.
             self.state = PAUSED
             self.draw_overlay()
+        elif self.state == READY and nav_y:
+            self.menu = 1 - self.menu
+            self.draw_overlay()
         elif self.state == READY and jump and playable:
-            self.state = PLAYING
-            self.drawn = None
+            if self.menu == 0:
+                self.state = PLAYING
+                self.drawn = None
+            else:  # The map: every level, by region.
+                self.state, self.map_region, self.map_pos = MAP, 0, 0
+                self.draw_map()
+        elif self.state == MAP:
+            self.map_input(nav_x, nav_y, jump, pressed)
         elif self.state == CALIBRATE:
             self.learn_tilt(ax, ay, connected)
         elif self.state == PLAYING and self.slider and self.tilt_axis is None:
@@ -379,7 +441,50 @@ class Game:
         elif self.state == PLAYING:
             self.draw_slider()
             self.draw_movers()
+            self.draw_boat()
             self.draw_player()
+
+    def map_input(self, nav_x, nav_y, jump, pressed):
+        _, start, count = REGIONS[self.map_region]
+        if nav_x:
+            self.map_region = (self.map_region + nav_x) % len(REGIONS)
+            self.map_pos = 0
+            self.draw_map()
+        elif nav_y:
+            pos = max(0, min(count - 1, self.map_pos + nav_y))
+            if pos != self.map_pos:
+                self.map_row(self.map_pos, False)
+                self.map_pos = pos
+                self.map_row(pos, True)
+        elif jump and self.playable_level(start + self.map_pos):
+            self.level, self.deaths, self.elapsed = start + self.map_pos, 0, 0.0
+            self.state = PLAYING
+            self.load_level()
+        elif pressed & 2:  # B: back to the title.
+            self.state = READY
+            self.drawn = None
+
+    def playable_level(self, index):
+        return bool((self.connected or 0) & 2)
+
+    def draw_map(self):
+        self.clear(BG)
+        name, start, count = REGIONS[self.map_region]
+        self.rect(0, 0, W, 34, SOLID)
+        title = f"< {name} >"
+        self.text((W - 12 * len(title)) // 2, 9, 2, BG, SOLID, title)
+        for i in range(count):
+            self.map_row(i, i == self.map_pos)
+        foot = "Stick choose  A play  B back"
+        self.text((W - 12 * len(foot)) // 2, 298, 2, INK, BG, foot)
+        self.drawn = (round(self.x), round(self.y))
+
+    def map_row(self, i, chosen):
+        _, start, _ = REGIONS[self.map_region]
+        y = 44 + 22 * i
+        ink, paper = (BG, INK) if chosen else (INK, BG)
+        self.rect(12, y - 3, W - 24, 22, paper)
+        self.text(20, y, 2, ink, paper, f"{i + 1:2d} {LEVELS[start + i]['name']}")
 
     def learn_tilt(self, ax, ay, connected):
         """The check can't be skipped: it waits for Movement and a clear tilt to the right."""
@@ -412,6 +517,8 @@ class Game:
         if self.slider:
             self.slider_rect = (round(self.slider[0]), *self.slider[1:])
             solids.append(self.slider_rect)
+        if self.boat_x is not None:
+            solids.append((round(self.boat_x), HULL_Y, HULL_W, HULL_H))
         return solids
 
     def move_slider(self, tilt, dt):
@@ -429,6 +536,11 @@ class Game:
         self.level_time += dt
         self.move_slider(-tilt if self.tilt_flip and tilt else tilt, dt)
         self.jump_buffer = max(0.0, self.jump_buffer - dt)
+        if self.in_boat:
+            if not self.jump_buffer:
+                self.row(run, dt)
+                return
+            self.in_boat = False  # Up and out of the boat; the jump below takes it from here.
         if self.jump_buffer and self.on_ground:
             self.vy = -JUMP
             self.jump_buffer = 0.0
@@ -471,8 +583,12 @@ class Game:
         self.update_mines(self.on_ground and not was_ground)
         if self.state == DYING:
             return
+        if self.river:
+            self.update_river()
         hit = any(overlaps(box, self.bullet_rect(b)) for b in self.bullets) or any(
             disc_hits(box, d["x"], d["y"], DISC_R - 1) for d in self.discs)
+        if self.river and self.y + PH > WATER_Y + 3:
+            hit = True  # In the river (or the acid).
         if self.y > H or hit or any(overlaps(box, s) for s in self.spikes + self.decoys):
             self.deaths += 1
             self.load_level()
@@ -482,6 +598,99 @@ class Game:
             self.state, self.enter_t, self.shut = ENTER, 0.0, 0
             self.vx = self.vy = 0.0
             self.draw_door(self.entering)
+
+    def row(self, run, dt):
+        """In the boat the stick rows it; the player sits still in it."""
+        lo, hi = 4, LEVELS[self.level]["solids"][0][0] - HULL_W  # up to the island
+        x = max(lo, min(hi, self.boat_x + run * BOAT_SPEED * dt))
+        dx, self.boat_x = x - self.boat_x, x
+        self.x += dx
+        self.vx, self.vy, self.on_ground = 0.0, 0.0, True
+        if dx:
+            self.facing = 1 if dx > 0 else -1
+            self.row_dist += abs(dx)
+
+    def stands_on(self, r):
+        return (self.on_ground and abs(self.y + PH - r[1]) < 0.5
+                and r[0] < self.x + PW and self.x < r[0] + r[2])
+
+    def update_river(self):
+        level = LEVELS[self.level]
+        island, ledge = level["solids"][0], level["solids"][1]
+        if self.boat_x is not None and self.stands_on((round(self.boat_x), HULL_Y, HULL_W, HULL_H)):
+            self.in_boat = True  # Back in the boat.
+            self.x = max(self.boat_x + 8, min(self.boat_x + 40, self.x))
+        if not self.acid and self.stands_on(island):
+            # On the island: the river turns to acid and the boat goes under.
+            self.acid = True
+            boat = self.boat_area(round(self.boat_x))
+            self.boat_x = None
+            self.repair((0, WATER_Y, W, H - WATER_Y))
+            self.repair(boat)
+        if self.acid and self.pop is None and not self.on_ground and self.x + PW > island[0] + island[2] + 2 \
+                and self.y + PH <= island[1] + 4:  # Leaping for the door: a block pops up...
+            self.pop = {"i": len(self.solids), "t": None}
+            self.solids.append(level["pop"])
+            self.rect(*level["pop"], SOLID)
+        if self.pop and self.solids[self.pop["i"]]:
+            if self.pop["t"] is None and self.stands_on(level["pop"]):
+                self.pop["t"] = self.level_time
+            elif self.pop["t"] is not None and self.level_time - self.pop["t"] >= POP_LIFE:
+                self.solids[self.pop["i"]] = None  # ...and doesn't stay.
+                self.repair(level["pop"])
+        middle = level["middle"]
+        if not self.swapped and (self.stands_on(ledge) or self.x > middle[0] + middle[2]):
+            # The door up here is fake; the real one shows up low down, with a block on the way.
+            self.swapped = True
+            if self.pop and self.solids[self.pop["i"]]:
+                self.solids[self.pop["i"]] = None  # The pop block is gone by now too.
+                self.repair(level["pop"])
+            old, self.door = self.door, level["true_door"]
+            self.solids += [level["rock"], level["middle"]]
+            self.repair(old)
+            self.rect(*level["rock"], SOLID)
+            self.rect(*level["middle"], SOLID)
+            self.draw_door()
+
+    def boat_rects(self, bx):
+        return [((bx, HULL_Y, HULL_W, 8), SOLID), ((bx + 4, HULL_Y + 8, HULL_W - 8, 6), SOLID),
+                ((bx + 10, WATER_Y, HULL_W - 20, 4), SOLID), ((bx, HULL_Y, HULL_W, 2), INK)]
+
+    def boat_area(self, bx):
+        return (bx - 20, HULL_Y - PH + SIT_DROP - 2, HULL_W + 40, WATER_Y + 10 - (HULL_Y - PH + SIT_DROP - 2))
+
+    def boat_parts(self):
+        """The boat over the seated player's legs, then the oar."""
+        if self.in_boat:
+            self.sprite()
+        for r, color in self.boat_rects(round(self.boat_x)):
+            self.rect(*r, color)
+        if self.in_boat:
+            frame = self.drawn_frame & 0x7F
+            hx, hy = HANDS[frame]
+            blade = hx + BLADE[frame]
+            if self.drawn_frame & FLIP:
+                hx, blade = PW - 1 - hx, PW - 1 - blade
+            x, y = self.drawn[0], self.drawn[1] + SIT_DROP
+            self.cmds.append(struct.pack("<chhhhBH", b"L", x + hx, y + hy, x + blade, WATER_Y + 7, 2, INK))
+
+    def draw_boat(self):
+        if self.boat_x is None:
+            return
+        bx = round(self.boat_x)
+        key = (bx, self.in_boat, round(self.x), self.player_frame() if self.in_boat else None)
+        if key == self.boat_drawn:
+            return
+        area = self.boat_area(bx)
+        if self.boat_drawn:
+            area = union(area, self.boat_area(self.boat_drawn[0]))
+        if self.drawn:
+            area = union(area, self.player_area())  # He may have been standing, not sitting.
+        self.boat_drawn = key
+        if self.in_boat:
+            self.drawn, self.drawn_frame = (round(self.x), round(self.y)), self.player_frame()
+        self.repair(area, sprite=False)
+        self.boat_parts()
 
     def update_mines(self, landed):
         for m in self.mines:
@@ -526,17 +735,23 @@ class Game:
         self.rect(x, y - 6, 16, 6, INK)
         self.rect(x + 6, y - 9, 4, 3, DOOR if m["state"] == "fuse" else SPIKE)  # Lit fuse goes white.
 
-    def repair(self, area):
+    def repair(self, area, sprite=True):
         """Repaint an area from the level as it is now."""
         self.draw_strip(area)
         for s in self.spikes:
             if overlaps(area, s):
                 self.spike(s)
         self.draw_decor(area)
-        if not self.gone and self.drawn and overlaps(area, (*self.drawn, PW, PH)):
+        if sprite and not self.gone and self.drawn and overlaps(area, self.player_area()):
             self.sprite()
 
+    def player_area(self):
+        seated = self.drawn_frame is not None and (self.drawn_frame & 0x7F) in HANDS
+        return (*self.drawn, PW, PH + (SIT_DROP if seated else 0))
+
     def player_frame(self):
+        if self.in_boat:
+            return ROW_CYCLE[int(self.row_dist / ROW_STRIDE) % len(ROW_CYCLE)] | (FLIP if self.facing < 0 else 0)
         if not self.on_ground and self.vy:  # A level that just loaded has not landed yet.
             frame = JUMP_FRAME
         elif self.vx:
@@ -799,7 +1014,12 @@ class Game:
 
     def scene(self):
         """The level as (rect, color) in draw order, for drawing it inside a strip."""
-        items = [((0, 0, W, H), BG)] + [(s, SOLID) for s in self.solids if s]
+        items = [((0, 0, W, H), BG)]
+        if self.river:
+            items.append(((0, WATER_Y, W, H - WATER_Y), ACID if self.acid else WATER))
+        items += [(s, SOLID) for s in self.solids if s]
+        if self.boat_x is not None:
+            items += self.boat_rects(round(self.boat_x))
         items += [(g, SOLID) for g in self.revealed if g in self.ghosts]
         items += [(b, INK) for b in self.barrels()]  # Spikes are teeth; repair() adds them.
         for x, y, w, h in [self.door] + self.more_doors + self.decoys:
@@ -829,7 +1049,8 @@ class Game:
             self.drawn = (round(self.x), round(self.y))  # Drawn as the jaws open.
             self.drawn_frame = self.player_frame()
             self.slider_drawn = round(self.slider[0]) if self.slider else None
-            for line, y in ((f"Level {self.level + 1}/{len(LEVELS)}", 206), (LEVELS[self.level]["name"], 246)):
+            region, pos, count = region_of(self.level)
+            for line, y in ((f"{region} {pos + 1}/{count}", 206), (LEVELS[self.level]["name"], 246)):
                 self.text((W - 12 * len(line)) // 2, y, 2, DOOR, SPIKE, line)
         elif t < DOORS_CLOSE + DOORS_HOLD:
             u = (t - DOORS_CLOSE) / DOORS_HOLD
@@ -877,7 +1098,12 @@ class Game:
                 self.rect(cx - 45 + 14 * i if look > 0 else cx + 31 - 14 * i, 30 + 3 * i, 14, 7, INK)
 
     def redraw(self):
+        if self.state == MAP:
+            self.draw_map()
+            return
         self.clear(BG)
+        if self.river:
+            self.rect(0, WATER_Y, W, H - WATER_Y, ACID if self.acid else WATER)
         for s in self.solids:
             if s:
                 self.rect(*s, SOLID)
@@ -907,6 +1133,10 @@ class Game:
         self.drawn_frame = self.player_frame()
         if not self.gone:
             self.sprite()
+        if self.boat_x is not None:
+            self.boat_parts()
+            self.boat_drawn = (round(self.boat_x), self.in_boat, round(self.x),
+                               self.drawn_frame if self.in_boat else None)
         if self.state not in (PLAYING, DYING) or not self.playable():
             self.draw_overlay()
 
@@ -914,7 +1144,8 @@ class Game:
         level = LEVELS[self.level]
         # Tile maps have a solid ceiling, so the HUD goes light on dark there.
         ink, paper = (DOOR, SOLID) if level.get("map") else (INK, BG)
-        self.text(4, 4, 2, ink, paper, f"{self.level + 1}/{len(LEVELS)} {level['name']}")
+        _, pos, count = region_of(self.level)
+        self.text(4, 4, 2, ink, paper, f"{pos + 1}/{count} {level['name']}")
         deaths = f"Deaths {self.deaths}"
         self.text(W - 4 - 12 * len(deaths), 4, 2, ink, paper, deaths)
         if not self.connected & 1:
@@ -931,7 +1162,8 @@ class Game:
             lines = ["Paused", "B to resume", "C to retry the level", "C twice to start over"]
         elif self.state == READY:
             lines = ["RAGEBAIT", "Reach the door.", "Trust nothing.",
-                     "Stick run   A jump", "B pause   C retry", "C twice: start over", "Tilt moves blue floors", "Press A to start"]
+                     "Stick run   A jump", "B pause   C retry", "C twice: start over",
+                     ("> " if self.menu == 0 else "  ") + "Play", ("> " if self.menu == 1 else "  ") + "Map"]
         else:
             lines = ["You escaped!", f"Deaths {self.deaths}  Time {self.elapsed:.0f}s",
                      "Press C to play again"]
@@ -942,13 +1174,14 @@ class Game:
             self.text(80, 80 + 24 * i, 2, INK, BG, line)
 
     def draw_player(self):
+        if self.in_boat:
+            return  # draw_boat draws him rowing.
         pos, frame = (round(self.x), round(self.y)), self.player_frame()
         if self.gone or (pos == self.drawn and frame == self.drawn_frame):
             return
-        old = (*self.drawn, PW, PH)
-        self.rect(*old, BG)
-        self.draw_decor(old)  # Repair doors or fake spikes the player walked through.
+        old = self.player_area()
         self.drawn, self.drawn_frame = pos, frame
+        self.repair(old, sprite=False)  # Whatever the player was in front of.
         self.sprite()
 
     def draw_slider(self):
