@@ -19,7 +19,7 @@ The levels:
 1. Easy start. Part of the floor drops out ahead of you.
 2. Spiky. You can see the first spike. The second one pops up as you get close, and then the door moves back to where you started.
 3. Mind the gap. A spike appears right before a gap, so you have to clear both in one jump.
-4. Tilt it. The gap is too wide to jump. Stand on the blue platform and tilt the console to ride it across.
+4. Tilt it. The gap is too wide to jump. Stand on the blue platform and tilt the console to ride it across. The first time you reach this level, the game asks you to tilt the console to the right. It uses that to learn which way the Movement module is mounted, so tilting right always moves the platform right. Press A to skip the check.
 5. The devil. Tilt across, then watch your step.
 
 ## When a control is missing
@@ -72,7 +72,8 @@ Tilt and feel, in `python/levdevil.py`:
 
 | Setting | Meaning |
 | --- | --- |
-| `TILT_X` | Which acceleration axis tilts the platforms, and its sign. Flip the sign if they move the wrong way. |
+| `TILT_X` | Axis and sign used only if the tilt check is skipped. The check normally learns them. |
+| `TILT_DEAD` | How far from the starting angle you can drift before a platform moves |
 | `TILT_SPEED`, `TILT_MAX` | How fast a tilt moves a platform |
 | `AUTO_SPEED` | Platform speed when Movement is unplugged |
 | `RUN`, `JUMP`, `GRAVITY` | Player feel |

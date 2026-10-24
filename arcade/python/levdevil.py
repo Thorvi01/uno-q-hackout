@@ -27,7 +27,8 @@ JUMP = 480.0         # px/s upward
 MAX_FALL = 700.0     # px/s
 JUMP_BUFFER = 0.12   # s; a jump pressed just before landing still counts
 STICK_RUN = 40       # calibrated stick units before the player runs
-TILT_X = (0, 1)      # (index into (ax, ay, az), sign): tilting right moves sliders right
+TILT_X = (0, 1)      # Fallback (index into (ax, ay, az), sign) if the tilt check is skipped
+TILT_LEARN = 250     # mg of tilt that answers the "tilt right" check
 TILT_SPEED = 0.6     # slider px/s per mg of tilt
 TILT_MAX = 220.0     # slider px/s
 TILT_DEAD = 40       # mg around the level-start angle that counts as level
@@ -62,7 +63,7 @@ LEVELS = [
      "traps": [{"when": (330, 480), "do": [("remove", 2)]}]},
 ]
 
-READY, PLAYING, RESULT = "ready", "playing", "result"
+READY, PLAYING, CALIBRATE, RESULT = "ready", "playing", "calibrate", "result"
 
 
 def overlaps(a, b):
@@ -76,6 +77,7 @@ class Game:
         self.bridge = bridge
         self.prev_buttons = 0
         self.connected = None
+        self.tilt_axis = None  # Learned on the first tilt level: (index into (ax, ay), sign).
         self.new_game()
 
     def new_game(self):
@@ -121,11 +123,19 @@ class Game:
         elif self.state == READY and jump and playable:
             self.state = PLAYING
             self.drawn = None
+        elif self.state == CALIBRATE:
+            self.learn_tilt(ax, ay, pressed, connected)
+        elif self.state == PLAYING and self.slider and connected & 4 and self.tilt_axis is None:
+            # First tilt level: ask for a tilt to the right and learn which way is right.
+            self.state = CALIBRATE
+            self.tilt_base = (ax, ay)
+            self.drawn = None
         elif self.state == PLAYING and playable:
             run = 0 if abs(stick_x) < STICK_RUN else (1 if stick_x > 0 else -1)
             tilt = None
             if connected & 4:
-                raw = (ax, ay, az)[TILT_X[0]] * TILT_X[1]
+                index, sign = self.tilt_axis or TILT_X
+                raw = (ax, ay, az)[index] * sign
                 if self.tilt_zero is None:
                     self.tilt_zero = raw  # However the player holds it at the start counts as level.
                 tilt = raw - self.tilt_zero
@@ -140,6 +150,20 @@ class Game:
         elif self.state == PLAYING:
             self.draw_slider()
             self.draw_player()
+
+    def learn_tilt(self, ax, ay, pressed, connected):
+        if not connected & 4 or pressed & 1:  # Movement gone, or A skips the check.
+            self.tilt_axis = self.tilt_axis or TILT_X
+        else:
+            deltas = (ax - self.tilt_base[0], ay - self.tilt_base[1])
+            index = 0 if abs(deltas[0]) >= abs(deltas[1]) else 1
+            if abs(deltas[index]) < TILT_LEARN:
+                return
+            self.tilt_axis = (index, 1 if deltas[index] > 0 else -1)
+            # The reading from before the tilt is level, not the tilted one.
+            self.tilt_zero = self.tilt_base[index] * self.tilt_axis[1]
+        self.state = PLAYING
+        self.drawn = None
 
     def box(self):
         return (self.x, self.y, PW, PH)
@@ -264,6 +288,8 @@ class Game:
     def draw_overlay(self):
         if not self.connected & 2:
             lines = ["Joystick disconnected", "Check the Qwiic cable.", "Game resumes when it's back"]
+        elif self.state == CALIBRATE:
+            lines = ["Tilt check", "Tilt the console to", "the RIGHT, then level", "it again.  A skips"]
         elif self.state == READY:
             lines = ["LEVEL DEVIL", "Reach the door.", "Trust nothing.",
                      "Stick run   A jump", "Tilt moves blue floors", "Press A to start"]
