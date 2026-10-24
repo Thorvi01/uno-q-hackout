@@ -10,6 +10,9 @@ adb wait-for-usb-device
 until on_board 'TMPDIR=/tmp arduino-app-cli app list >/dev/null 2>&1'; do sleep 2; done
 echo "Board is up."
 
+# Only one app can run at a time (README "Terminal commands"); stop any App Lab app first.
+on_board 'export TMPDIR=/tmp; arduino-app-cli app ps | awk "NR > 1 && NF { print \$1 }" | while read -r id; do echo "Stopping $id"; arduino-app-cli app stop "$id"; done' || :
+
 online() { on_board 'curl -s -m8 -o /dev/null https://downloads.arduino.cc/' >/dev/null 2>&1; }
 if ! online; then
     echo "Board has no internet; trying the saved iPhone hotspot..."
