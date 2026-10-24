@@ -3,6 +3,7 @@
 Game rules run here in Python; the sketch only draws (game_* Bridge calls).
 """
 import math
+import random
 import struct
 
 import levels
@@ -38,6 +39,7 @@ AUTO_SPEED = 70.0    # slider px/s when Movement is unavailable
 TILE = 32            # tile-map levels (levels.py) use 15 x 10 tiles of this size
 TRAP_NEAR = 2        # tiles; a hidden spike wakes when the player is this close
 FLICKER = 0.4        # s a hidden spike or collapsing floor flickers before it acts
+# Levels 6-8 pick a new trap layout every life, and their traps give no warning.
 BLINK = 0.1          # s per flicker phase
 DEBUG_TRAPS = False  # print every trap state change
 DOORS_CLOSE, DOORS_HOLD, DOORS_OPEN = 0.55, 0.4, 0.55  # s; the level transition, 1.5 s in all
@@ -111,6 +113,8 @@ def from_map(entry):
 levels.validate()
 # The tile maps come after the first three levels; the tilt levels stay last.
 LEVELS = RECT_LEVELS[:3] + [from_map(m) for m in levels.LEVELS] + RECT_LEVELS[3:]
+for level, kind in zip(LEVELS[5:], ("gate", "tilt", "devil")):
+    level["surprise"] = kind
 
 MAX_BATCH = 200  # Drawing bytes per Bridge call; the MCU accepts 256-byte messages.
 INPUT_KEYS = ("video", "connected", "buttons", "x", "y", "ax", "ay", "az", "reset")
@@ -154,7 +158,8 @@ class Game:
         self.solids = list(level["solids"])
         self.spikes = list(level["spikes"])
         self.door = level["door"]
-        self.fired = [False] * len(level["traps"])
+        self.traps = list(level["traps"])
+        self.fired = [False] * len(self.traps)
         self.slider = list(level["slider"][:4]) if "slider" in level else None
         self.slider_rect = None
         self.slider_dir = 1
@@ -177,6 +182,9 @@ class Game:
             self.crumble.append({"kind": "floor", "rect": r, "state": "solid", "t": 0.0, "shown": True,
                                  "index": len(self.solids)})
             self.solids.append(r)
+        self.trap_near, self.spike_delay, self.floor_delay = TRAP_NEAR, FLICKER, FLICKER
+        if "surprise" in level:
+            self.surprise(level["surprise"])
 
     def exchange(self):
         """Send the queued drawing and return fresh inputs: one Bridge call per frame."""
@@ -215,6 +223,8 @@ class Game:
             self.connected = connected
             self.drawn = None
         playable = bool(connected & 2)  # Running needs the joystick.
+        if pressed & 4:  # C starts over from level 1, from anywhere.
+            self.new_game()
         if self.state == TRANSITION:
             if self.drawn is not None:
                 self.run_transition(dt)
@@ -226,20 +236,17 @@ class Game:
             self.state = PLAYING
         jump = pressed & 9              # A or the stick press.
 
-        if self.state == RESULT and pressed & 12:
+        if pressed & 4:
+            pass  # Already started over above.
+        elif self.state == RESULT and pressed & 8:
             self.new_game()
         elif self.state == PAUSED:
             if pressed & 2:  # B resumes.
                 self.state = PLAYING
                 self.drawn = None
-            elif pressed & 4:
-                self.state = PLAYING
-                self.load_level()
         elif self.state == PLAYING and pressed & 2:  # B pauses.
             self.state = PAUSED
             self.draw_overlay()
-        elif self.state == PLAYING and pressed & 4:
-            self.load_level()
         elif self.state == READY and jump and playable:
             self.state = PLAYING
             self.drawn = None
@@ -358,7 +365,7 @@ class Game:
 
     def fire_traps(self):
         cx = self.x + PW / 2
-        for i, trap in enumerate(LEVELS[self.level]["traps"]):
+        for i, trap in enumerate(self.traps):
             lo, hi = trap["when"]
             if self.fired[i] or not lo <= cx <= hi:
                 continue
@@ -377,6 +384,49 @@ class Game:
                     self.rect(*self.door, BG)
                     self.door = arg
                     self.draw_door()
+                elif kind == "spike_ahead":  # A spike pops up a short way in front.
+                    self.spike_ahead(cx + arg)
+                elif kind == "drop_ahead":  # The next floor ahead falls away.
+                    ahead = [i for i, s in enumerate(self.solids)
+                             if s and s[0] > cx and not overlaps(s, (self.door[0], self.door[1] + self.door[3], self.door[2], 1))]
+                    if ahead:
+                        i = min(ahead, key=lambda i: self.solids[i][0])
+                        self.rect(*self.solids[i], BG)
+                        self.solids[i] = None
+
+    def spike_ahead(self, x):
+        x = round(x)
+        for s in self.solids:
+            if s and s[0] <= x and x + 20 <= s[0] + s[2] and s[1] >= self.y + PH - 1:
+                spike = (x, s[1] - 12, 20, 12)
+                if not overlaps(spike, self.door):
+                    self.spikes.append(spike)
+                    self.rect(*spike, SPIKE)
+                return
+
+    def surprise(self, kind):
+        """A fresh trap layout for this life, so a death can't be memorised."""
+        self.spike_delay = self.floor_delay = 0.0  # No warning flicker on these levels.
+        if kind == "gate":  # Level 6: which exit is real, where the spikes are, how fast the floor goes.
+            self.trap_near = 1.5
+            self.floor_delay = random.choice((0.15, 0.25, 0.4))
+            if random.random() < 0.5:  # The ground door is real; the top one kills.
+                self.door, self.decoys = self.decoys[0], [self.door] + self.decoys[1:]
+                # Most of the ground runs under a 1-tile ceiling, so only column 6 can be jumped.
+                cols = random.choice(([], [6]))
+            else:  # The top door is real; spikes on the ground punish a fall.
+                cols = random.sample(range(6, 13), random.choice((1, 2)))
+            self.hidden = [{"kind": "hidden spike", "rect": spike_tile(c * TILE, 7 * TILE), "state": "hidden",
+                            "t": 0.0, "shown": False} for c in cols]
+        elif kind == "tilt":  # Level 7: maybe a spike as you land, and the door may run back to the start.
+            self.traps = [{"when": (random.uniform(402, 430), 480), "do": [("spike_ahead", random.uniform(30, 46))]}]
+            if random.random() < 0.6:
+                self.traps.append({"when": (random.uniform(405, 440), 480), "do": [("door", (20, 240, 24, 40))]})
+        elif kind == "devil":  # Level 8: the floor ahead drops at a random spot; maybe a spike too.
+            self.traps = [{"when": (random.uniform(312, 395), 480), "do": [("drop_ahead", None)]}]
+            if random.random() < 0.5:
+                self.traps.append({"when": (random.uniform(320, 400), 480), "do": [("spike_ahead", random.uniform(30, 46))]})
+        self.fired = [False] * len(self.traps)
 
     def set_trap(self, trap, state):
         if DEBUG_TRAPS:
@@ -399,10 +449,10 @@ class Game:
         cx, cy = self.x + PW / 2, self.y + PH / 2
         for trap in self.hidden:
             x, y, w, h = trap["rect"]
-            near = abs(cx - (x + w / 2)) <= TRAP_NEAR * TILE and abs(cy - (y + h / 2)) <= TRAP_NEAR * TILE
+            near = abs(cx - (x + w / 2)) <= self.trap_near * TILE and abs(cy - (y + h / 2)) <= TRAP_NEAR * TILE
             if trap["state"] == "hidden" and near:
                 self.set_trap(trap, "flicker")
-            elif trap["state"] == "flicker" and t - trap["t"] >= FLICKER:
+            elif trap["state"] == "flicker" and t - trap["t"] >= self.spike_delay:
                 self.set_trap(trap, "armed")
                 self.spikes.append(trap["rect"])
             self.show_trap(trap, SPIKE)
@@ -410,7 +460,7 @@ class Game:
         for trap in self.crumble:
             if trap["state"] == "solid" and self.on_ground and overlaps(feet, trap["rect"]):
                 self.set_trap(trap, "flicker")
-            elif trap["state"] == "flicker" and t - trap["t"] >= FLICKER:
+            elif trap["state"] == "flicker" and t - trap["t"] >= self.floor_delay:
                 self.set_trap(trap, "gone")
                 self.solids[trap["index"]] = None
             self.show_trap(trap, SOLID)
@@ -461,7 +511,7 @@ class Game:
             self.drawn = (round(self.x), round(self.y))  # Drawn as the doors open.
             self.slider_drawn = round(self.slider[0]) if self.slider else None
             for line, y in ((f"Level {self.level + 1}/{len(LEVELS)}", 120), (LEVELS[self.level]["name"], 180)):
-                self.text((W - 12 * len(line)) // 2, y, 2, DOOR, SOLID, line)
+                self.text((W - 12 * len(line)) // 2, y, 2, BG, SOLID, line)
         elif t < DOORS_CLOSE + DOORS_HOLD:
             pass
         elif t < DOORS_CLOSE + DOORS_HOLD + DOORS_OPEN:
@@ -477,9 +527,9 @@ class Game:
             return
         start = max(0, p - 3)  # Repaint the old edge stripe as door.
         self.rect(0, start, W, k - start, SOLID)
-        self.rect(0, k - 3, W, 3, DOOR)
+        self.rect(0, k - 3, W, 3, INK)
         self.rect(0, H - k, W, k - start, SOLID)
-        self.rect(0, H - k, W, 3, DOOR)
+        self.rect(0, H - k, W, 3, INK)
         self.doors_k = k
 
     def open_doors(self, k):
@@ -489,8 +539,8 @@ class Game:
         self.draw_strip((0, k, W, p - k))
         self.draw_strip((0, H - p, W, p - k))
         if k > 0:
-            self.rect(0, k - 3, W, 3, DOOR)
-            self.rect(0, H - k, W, 3, DOOR)
+            self.rect(0, k - 3, W, 3, INK)
+            self.rect(0, H - k, W, 3, INK)
         self.doors_k = k
 
     def redraw(self):
@@ -531,10 +581,10 @@ class Game:
         elif self.state == CALIBRATE:
             lines = ["Tilt check", "Tilt the console to", "the RIGHT, then level", "it again.  A skips"]
         elif self.state == PAUSED:
-            lines = ["Paused", "B to resume", "C to restart level"]
+            lines = ["Paused", "B to resume", "C to start over"]
         elif self.state == READY:
             lines = ["LEVEL DEVIL", "Reach the door.", "Trust nothing.",
-                     "Stick run   A jump", "B pause   C restart", "Tilt moves blue floors", "Press A to start"]
+                     "Stick run   A jump", "B pause  C start over", "Tilt moves blue floors", "Press A to start"]
         else:
             lines = ["You escaped!", f"Deaths {self.deaths}  Time {self.elapsed:.0f}s",
                      "Press C to play again"]

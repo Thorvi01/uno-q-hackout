@@ -12,7 +12,7 @@ Get the player to the white door on each of the eight levels. Your death count a
 | A (or joystick press) | Jump |
 | Tilt the console left/right | Move the blue platforms (levels 4 and 5) |
 | B | Pause; B again resumes |
-| C | Restart the current level; from the end screen, play again |
+| C | Start over from level 1, any time (deaths and time reset) |
 
 The levels:
 
@@ -21,9 +21,11 @@ The levels:
 3. Mind the gap. A spike appears right before a gap, so you have to clear both in one jump.
 4. Not everything bites. One spike is fake and one is hidden until you get close.
 5. The floor is a liar. Part of the floor collapses under you, so keep moving.
-6. Nothing is what it seems. The door on the ground kills you. The real one is up top.
+6. Nothing is what it seems. One door is real and one kills you, and which is which changes every life.
 7. Tilt it. The gap is too wide to jump. Stand on the blue platform and tilt the console to ride it across. The first time you reach this level, the game asks you to tilt the console to the right. It uses that to learn which way the Movement module is mounted, so tilting right always moves the platform right. Press A to skip the check.
 8. The devil. Tilt across, then watch your step.
+
+Levels 6 to 8 pick a new trap layout every time you die, so remembering how you died doesn't help. Their traps give no warning flicker and fire the moment you reach them. Level 6 changes which door is real, where hidden spikes sit and how fast the floor drops. Level 7 may pop a spike where you land and may send the door back to the start. Level 8 drops the floor ahead of you at a random spot and sometimes adds a spike. Every layout leaves a way through: automated runs through the game's own physics beat 40 random layouts of each level.
 
 Between levels, two doors close from the top and bottom, show the next level's name, and open on it (1.5 s).
 
